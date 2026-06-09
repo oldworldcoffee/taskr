@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Plus, MapPin, Pencil, Trash2, Building2, ImageIcon, CreditCard, DollarSign, AlertTriangle, Palette } from "lucide-react";
+import { Plus, MapPin, Pencil, Trash2, Building2, ImageIcon, CreditCard, DollarSign, AlertTriangle } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
@@ -19,8 +19,6 @@ export default function DashboardSettings() {
   // Brand settings
   const [brandName, setBrandName] = useState("");
   const [brandLogoUrl, setBrandLogoUrl] = useState(null);
-  const [brandPrimaryColor, setBrandPrimaryColor] = useState("");
-  const [brandSecondaryColor, setBrandSecondaryColor] = useState("");
   const [brandSaving, setBrandSaving] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
   const logoInputRef = useRef(null);
@@ -36,8 +34,6 @@ export default function DashboardSettings() {
   const brandRecord = brandData;
   const displayName = brandName || brandRecord?.business_name || "";
   const displayLogo = brandLogoUrl ?? brandRecord?.logo_url ?? null;
-  const displayPrimaryColor = brandPrimaryColor || brandRecord?.primary_color || "";
-  const displaySecondaryColor = brandSecondaryColor || brandRecord?.secondary_color || "";
 
   const handleLogoUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -53,9 +49,7 @@ export default function DashboardSettings() {
     const payload = { 
       business_name: displayName, 
       logo_url: displayLogo, 
-      company_id: user.company_id,
-      primary_color: displayPrimaryColor || null,
-      secondary_color: displaySecondaryColor || null
+      company_id: user.company_id
     };
     if (brandRecord?.id) {
       await base44.entities.BrandSettings.update(brandRecord.id, payload);
@@ -220,50 +214,7 @@ export default function DashboardSettings() {
             </div>
           </div>
           {logoUploading && <p className="text-xs text-muted-foreground">Uploading logo…</p>}
-          
-          <div className="border-t pt-4">
-            <div className="flex items-center gap-2 mb-3">
-              <Palette className="h-4 w-4 text-muted-foreground" />
-              <Label className="text-sm font-medium">Brand Colors</Label>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label className="text-xs">Primary Color</Label>
-                <div className="flex gap-2">
-                  <input
-                    type="color"
-                    value={displayPrimaryColor || "#1a5f7a"}
-                    onChange={(e) => setBrandPrimaryColor(e.target.value)}
-                    className="h-9 w-12 rounded border border-input cursor-pointer"
-                  />
-                  <Input
-                    value={displayPrimaryColor || "#1a5f7a"}
-                    onChange={(e) => setBrandPrimaryColor(e.target.value)}
-                    placeholder="#1a5f7a"
-                    className="flex-1"
-                  />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label className="text-xs">Secondary Color</Label>
-                <div className="flex gap-2">
-                  <input
-                    type="color"
-                    value={displaySecondaryColor || "#159895"}
-                    onChange={(e) => setBrandSecondaryColor(e.target.value)}
-                    className="h-9 w-12 rounded border border-input cursor-pointer"
-                  />
-                  <Input
-                    value={displaySecondaryColor || "#159895"}
-                    onChange={(e) => setBrandSecondaryColor(e.target.value)}
-                    placeholder="#159895"
-                    className="flex-1"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-          
+
           <div className="flex justify-end">
             <Button size="sm" onClick={saveBrand} disabled={brandSaving || logoUploading}>
               {brandSaving ? "Saving…" : "Save Brand"}

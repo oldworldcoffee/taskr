@@ -23,7 +23,8 @@ import EmployeeSettings from "@/pages/EmployeeSettings";
 import EmployeeDirectory from "@/pages/EmployeeDirectory";
 
 import DashboardLayout from "@/components/layout/DashboardLayout";
-import Dashboard from "@/pages/Dashboard";
+import OperationsHome from "@/pages/OperationsHome";
+import ChecklistOverview from "@/pages/Dashboard";
 import ChecklistReview from "@/pages/ChecklistReview";
 import DashboardIssues from "@/pages/DashboardIssues";
 import DashboardEmployees from "@/pages/DashboardEmployees";
@@ -33,11 +34,27 @@ import SpreadsheetImport from "@/pages/SpreadsheetImport";
 import ChecklistSetup from "@/pages/ChecklistSetup";
 import DepositReports from "@/pages/DepositReports";
 import KnowledgeBase from "@/pages/KnowledgeBase";
-import EmployeeKnowledgeBase from "@/pages/EmployeeKnowledgeBase";
+import EmployeeKnowledgeBase from "@/pages/EmployeeKnowledgeBasePage";
 import Forum from "@/pages/Forum";
 import Chat from "@/pages/Chat";
 import PrivateGroups from "@/pages/PrivateGroups";
 import Equipment from "@/pages/Equipment";
+import InventoryRoute from "@/components/inventory/InventoryRoute";
+import InventoryLayout from "@/components/inventory/InventoryLayout";
+import InventoryDashboard from "@/pages/inventory/Dashboard";
+import InventoryCatalog from "@/pages/inventory/MasterCatalog";
+import InventoryStock from "@/pages/inventory/LocationStock";
+import InventoryCounts from "@/pages/inventory/InventoryCounts";
+import InventoryOrders from "@/pages/inventory/VendorOrders.jsx?v=taskr-inventory-orders-20260609";
+import InventoryOnlineOrders from "@/pages/inventory/OnlineOrders";
+import InventoryInStoreOrders from "@/pages/inventory/InStoreOrders";
+import InventoryCommissary from "@/pages/inventory/Commissary";
+import InventoryTransfers from "@/pages/inventory/Transfers";
+import InventoryInvoices from "@/pages/inventory/Invoices";
+import InventoryVendors from "@/pages/inventory/Vendors";
+import InventoryReports from "@/pages/inventory/Reports";
+import InventorySettings from "@/pages/inventory/Settings";
+import VendorOrderView from "@/pages/inventory/VendorOrderView";
 
 import SuperAdminLayout from "@/components/layout/SuperAdminLayout";
 import SuperAdminOverview from "@/pages/super-admin/Overview";
@@ -75,6 +92,7 @@ const AuthenticatedApp = () => {
       <Route path="/register" element={<Register />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/vendor/order" element={<VendorOrderView />} />
 
       {/* Public Self-Enrollment Route */}
       <Route path="/enroll" element={<SelfEnroll />} />
@@ -110,7 +128,9 @@ const AuthenticatedApp = () => {
 
         {/* Management Routes */}
         <Route element={<DashboardLayout />}>
-          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/dashboard" element={<OperationsHome />} />
+          <Route path="/dashboard/checklists" element={<Navigate to="/dashboard/checklists/overview" replace />} />
+          <Route path="/dashboard/checklists/overview" element={<ChecklistOverview />} />
           <Route path="/dashboard/review/:instanceId" element={<ChecklistReview />} />
           <Route path="/dashboard/issues" element={<DashboardIssues />} />
           <Route path="/dashboard/employees" element={<DashboardEmployees />} />
@@ -124,6 +144,23 @@ const AuthenticatedApp = () => {
           <Route path="/dashboard/chat" element={<Chat />} />
           <Route path="/dashboard/private-groups" element={<PrivateGroups />} />
           <Route path="/dashboard/equipment" element={<Equipment />} />
+          <Route element={<InventoryRoute />}>
+            <Route path="/dashboard/inventory" element={<InventoryLayout />}>
+              <Route index element={<InventoryDashboard />} />
+              <Route path="catalog" element={<InventoryCatalog />} />
+              <Route path="stock" element={<InventoryStock />} />
+              <Route path="counts" element={<InventoryCounts />} />
+              <Route path="orders" element={<InventoryOrders />} />
+              <Route path="online-orders" element={<InventoryOnlineOrders />} />
+              <Route path="instore-orders" element={<InventoryInStoreOrders />} />
+              <Route path="commissary" element={<InventoryCommissary />} />
+              <Route path="transfers" element={<InventoryTransfers />} />
+              <Route path="invoices" element={<InventoryInvoices />} />
+              <Route path="vendors" element={<InventoryVendors />} />
+              <Route path="reports" element={<InventoryReports />} />
+              <Route path="settings" element={<InventorySettings />} />
+            </Route>
+          </Route>
         </Route>
       </Route>
 

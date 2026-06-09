@@ -6,6 +6,7 @@ module.exports = {
     extend: {
       fontFamily: {
         sans: ['var(--font-sans)'],
+        inter: ['Inter', 'sans-serif'],
       },
       borderRadius: {
         lg: 'var(--radius)',
@@ -48,6 +49,7 @@ module.exports = {
         ring: 'hsl(var(--ring))',
         success: 'hsl(var(--success))',
         warning: 'hsl(var(--warning))',
+        info: 'hsl(var(--info))',
         chart: {
           '1': 'hsl(var(--chart-1))',
           '2': 'hsl(var(--chart-2))',
