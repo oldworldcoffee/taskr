@@ -9,12 +9,14 @@ import PageHeader from '@/components/layout/PageHeader';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import { formatOrderQuantity, getOrderUnit, toStockQuantity } from '@/lib/inventoryOrderUnits';
 
 export default function InStoreOrders() {
   const { canAccessLocation, companyId } = useAuth();
   const [orders, setOrders] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [viewOrder, setViewOrder] = useState(null);
   const [checkedItems, setCheckedItems] = useState({});
@@ -24,15 +26,17 @@ export default function InStoreOrders() {
   const isMobile = useIsMobile();
 
   const load = async () => {
-    const [locs, vends, ords] = await Promise.all([
+    const [locs, vends, itms, ords] = await Promise.all([
       base44.entities.Location.filter({ is_active: true, company_id: companyId }),
       base44.entities.Vendor.filter({ is_active: true, company_id: companyId }),
+      base44.entities.InventoryItem.filter({ is_active: true, company_id: companyId }),
       base44.entities.Order.filter({ company_id: companyId }, '-created_date', 100),
     ]);
     const accessibleLocIds = new Set(locs.filter(l => canAccessLocation(l.id)).map(l => l.id));
     const instoreVendorIds = new Set(vends.filter(v => v.order_type === 'instore').map(v => v.id));
     setLocations(locs);
     setVendors(vends);
+    setItems(itms);
     setOrders(
       ords.filter(o =>
         accessibleLocIds.has(o.location_id) &&
@@ -45,19 +49,37 @@ export default function InStoreOrders() {
 
   useEffect(() => { load(); }, []);
 
+  const getOrderItemDetails = (orderItem) => {
+    const catalogItem = items.find(i => i.id === orderItem.item_id) || {};
+    return {
+      ...catalogItem,
+      ...orderItem,
+      name: orderItem.item_name || catalogItem.name,
+      item_name: orderItem.item_name || catalogItem.name,
+      unit_of_measure: orderItem.base_unit_of_measure || catalogItem.unit_of_measure || orderItem.unit_of_measure,
+      purchase_options: orderItem.purchase_options?.length ? orderItem.purchase_options : catalogItem.purchase_options || [],
+      count_units: orderItem.count_units?.length ? orderItem.count_units : catalogItem.count_units || [],
+      inner_pack_name: orderItem.inner_pack_name || catalogItem.inner_pack_name,
+      inner_pack_units: orderItem.inner_pack_units || catalogItem.inner_pack_units,
+      packs_per_case: orderItem.packs_per_case || catalogItem.packs_per_case,
+    };
+  };
+
   const openOrder = async (order) => {
+    let activeOrder = order;
     if (order.status === 'sent') {
       await base44.entities.Order.update(order.id, { status: 'viewed', viewed_at: new Date().toISOString() });
       await load();
       const fresh = await base44.entities.Order.get(order.id);
-      setViewOrder(fresh);
+      activeOrder = fresh;
     } else {
-      setViewOrder(order);
+      activeOrder = order;
     }
-    const isDone = order.status === 'fulfilled' || order.status === 'received';
+    setViewOrder(activeOrder);
+    const isDone = activeOrder.status === 'fulfilled' || activeOrder.status === 'received';
     const initChecked = {};
     const initQtys = {};
-    (order.items || []).forEach(item => {
+    (activeOrder.items || []).forEach(item => {
       initChecked[item.item_id] = isDone;
       initQtys[item.item_id] = item.quantity_ordered;
     });
@@ -96,10 +118,19 @@ export default function InStoreOrders() {
     if (!viewOrder || !allResolved) return;
     setCompleting(true);
     const updatedItems = (viewOrder.items || []).map(item => {
+      const itemDetails = getOrderItemDetails(item);
+      const orderUnit = getOrderUnit(itemDetails, viewOrder.vendor_id);
       const skipped = !!skippedItems[item.item_id];
       const actualQty = skipped ? 0 : (itemQtys[item.item_id] ?? item.quantity_ordered);
       return {
         ...item,
+        unit_of_measure: orderUnit.label,
+        base_unit_of_measure: orderUnit.baseUnit,
+        order_unit_label: orderUnit.label,
+        order_unit_multiplier: orderUnit.multiplier,
+        stock_quantity_ordered: item.stock_quantity_ordered ?? toStockQuantity(item.quantity_ordered, orderUnit),
+        stock_quantity_received: toStockQuantity(actualQty, orderUnit),
+        selected_purchase_option: orderUnit.option || item.selected_purchase_option || null,
         quantity_received: actualQty,
         total_cost: actualQty * (item.unit_cost || 0),
       };
@@ -121,6 +152,15 @@ export default function InStoreOrders() {
 
   const statusOrder = { sent: 0, viewed: 1, fulfilled: 2, received: 3 };
   const sortedOrders = [...orders].sort((a, b) => (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99));
+  const viewOrderTotal = viewOrder
+    ? (viewOrder.items || []).reduce((sum, item) => {
+      if (viewOrder.status === 'fulfilled' || viewOrder.status === 'received') {
+        return sum + Number(item.total_cost || 0);
+      }
+      const qty = itemQtys[item.item_id] ?? item.quantity_ordered;
+      return sum + (skippedItems[item.item_id] ? 0 : qty * Number(item.unit_cost || 0));
+    }, 0)
+    : 0;
 
   if (loading) return (
     <div className="flex items-center justify-center h-64">
@@ -211,6 +251,8 @@ export default function InStoreOrders() {
               <div className="border border-border rounded-xl overflow-hidden">
                 <div className="divide-y divide-border">
                   {viewOrder.items?.map((item, idx) => {
+                    const itemDetails = getOrderItemDetails(item);
+                    const orderUnit = getOrderUnit(itemDetails, viewOrder.vendor_id);
                     const checked = !!checkedItems[item.item_id];
                     const skipped = !!skippedItems[item.item_id];
                     const qty = itemQtys[item.item_id] ?? item.quantity_ordered;
@@ -240,17 +282,17 @@ export default function InStoreOrders() {
                           {skipped ? (
                             <p className="text-xs text-destructive font-medium">Skipped / Not available</p>
                           ) : isDone ? (
-                            <p className="text-xs text-muted-foreground">Received: {item.quantity_received ?? item.quantity_ordered} {item.unit_of_measure}</p>
+                            <p className="text-xs text-muted-foreground">Received: {formatOrderQuantity(item.quantity_received ?? item.quantity_ordered, orderUnit.label)}</p>
                           ) : (
                             <div className="flex items-center gap-2 mt-1">
                               <button onClick={() => updateQty(item.item_id, -1)} className="w-5 h-5 rounded border flex items-center justify-center hover:bg-muted transition-colors">
                                 <Minus className="w-3 h-3" />
                               </button>
-                              <span className="text-xs font-medium min-w-[40px] text-center">{qty} {item.unit_of_measure}</span>
+                              <span className="text-xs font-medium min-w-[72px] text-center">{formatOrderQuantity(qty, orderUnit.label)}</span>
                               <button onClick={() => updateQty(item.item_id, 1)} className="w-5 h-5 rounded border flex items-center justify-center hover:bg-muted transition-colors">
                                 <Plus className="w-3 h-3" />
                               </button>
-                              <span className="text-xs text-muted-foreground ml-1">· ${(item.unit_cost || 0).toFixed(2)} ea</span>
+                              <span className="text-xs text-muted-foreground ml-1">· ${(item.unit_cost || 0).toFixed(2)} / {orderUnit.label}</span>
                             </div>
                           )}
                         </div>
@@ -276,7 +318,7 @@ export default function InStoreOrders() {
                   })}
                 </div>
                 <div className="bg-muted/30 px-4 py-2 flex justify-end">
-                  <span className="text-sm font-semibold">Total: ${(viewOrder.total_amount || 0).toFixed(2)}</span>
+                  <span className="text-sm font-semibold">Total: ${viewOrderTotal.toFixed(2)}</span>
                 </div>
               </div>
 

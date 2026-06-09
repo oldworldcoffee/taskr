@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
+import { enrichLocationsWithInventorySettings } from '@/lib/inventoryLocations';
+import { getInventoryItemValue } from '@/lib/inventoryValue';
 import { DollarSign, ArrowLeftRight, AlertTriangle, FileText } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
 import PageHeader from '@/components/layout/PageHeader';
@@ -22,13 +24,15 @@ export default function Dashboard() {
   useEffect(() => {
     Promise.all([
       base44.entities.Location.list(),
+      base44.entities.InventoryLocationSetting.list(),
       base44.entities.InventoryItem.list(),
       base44.entities.LocationInventory.list(),
       base44.entities.Order.list('-created_date', 10),
       base44.entities.Transfer.list('-created_date', 10),
       base44.entities.Invoice.filter({ status: 'pending_review' }),
-    ]).then(([locs, itms, linv, ords, trans, invs]) => {
-      const filteredLocs = locs.filter(l => canAccessLocation(l.id));
+    ]).then(([locs, settings, itms, linv, ords, trans, invs]) => {
+      const enrichedLocs = enrichLocationsWithInventorySettings(locs, settings);
+      const filteredLocs = enrichedLocs.filter(l => canAccessLocation(l.id));
       setLocations(filteredLocs);
       setItems(itms);
       setLocInv(linv.filter(li => canAccessLocation(li.location_id)));
@@ -41,7 +45,8 @@ export default function Dashboard() {
 
   const totalValue = locInv.reduce((sum, li) => {
     const item = items.find(i => i.id === li.item_id);
-    return sum + (li.on_hand_quantity || 0) * (item?.unit_cost || 0);
+    const loc = locations.find(l => l.id === li.location_id);
+    return sum + getInventoryItemValue(item, li.on_hand_quantity || 0, loc);
   }, 0);
 
   const lowStockCount = locInv.filter(li => {
@@ -57,7 +62,7 @@ export default function Dashboard() {
       .filter(li => li.location_id === loc.id)
       .reduce((sum, li) => {
         const item = items.find(i => i.id === li.item_id);
-        return sum + (li.on_hand_quantity || 0) * (item?.unit_cost || 0);
+        return sum + getInventoryItemValue(item, li.on_hand_quantity || 0, loc);
       }, 0);
     return { ...loc, value: val };
   });

@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
+import { enrichLocationsWithInventorySettings } from '@/lib/inventoryLocations';
+import { getInventoryItemValue, getInventorySnapshotValue } from '@/lib/inventoryValue';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { DollarSign, Package, TrendingDown, TrendingUp, Calendar, MapPin } from 'lucide-react';
 import PageHeader from '@/components/layout/PageHeader';
@@ -23,11 +25,12 @@ export default function Reports() {
   useEffect(() => {
     Promise.all([
       base44.entities.Location.list(),
+      base44.entities.InventoryLocationSetting.list(),
       base44.entities.InventoryItem.list(),
       base44.entities.LocationInventory.list(),
       base44.entities.Order.list('-created_date', 100),
-    ]).then(([locs, itms, linv, ords]) => {
-      setLocations(locs);
+    ]).then(([locs, settings, itms, linv, ords]) => {
+      setLocations(enrichLocationsWithInventorySettings(locs, settings));
       setItems(itms);
       setLocInv(linv);
       setOrders(ords);
@@ -63,12 +66,13 @@ export default function Reports() {
   const totalValue = isViewingSnapshot 
     ? snapshotData.reduce((sum, snap) => {
         if (selectedLocationId !== 'all' && snap.location_id !== selectedLocationId) return sum;
-        return sum + (snap.inventory_value || 0);
+        return sum + getInventorySnapshotValue(snap);
       }, 0)
     : locInv.reduce((sum, li) => {
         if (selectedLocationId !== 'all' && li.location_id !== selectedLocationId) return sum;
         const item = items.find(i => i.id === li.item_id);
-        return sum + (li.on_hand_quantity || 0) * (item?.unit_cost || 0);
+        const loc = locations.find(l => l.id === li.location_id);
+        return sum + getInventoryItemValue(item, li.on_hand_quantity || 0, loc);
       }, 0);
 
   const lowStockItems = locInv.filter(li => {
@@ -84,12 +88,12 @@ export default function Reports() {
     const val = isViewingSnapshot
       ? snapshotData
           .filter(snap => snap.location_id === loc.id)
-          .reduce((sum, snap) => sum + (snap.inventory_value || 0), 0)
+          .reduce((sum, snap) => sum + getInventorySnapshotValue(snap), 0)
       : locInv
           .filter(li => li.location_id === loc.id)
           .reduce((sum, li) => {
             const item = items.find(i => i.id === li.item_id);
-            return sum + (li.on_hand_quantity || 0) * (item?.unit_cost || 0);
+            return sum + getInventoryItemValue(item, li.on_hand_quantity || 0, loc);
           }, 0);
     return { name: loc.name, value: parseFloat(val.toFixed(2)), color: COLORS[idx % COLORS.length] };
   });
@@ -103,12 +107,13 @@ export default function Reports() {
             if (selectedLocationId !== 'all' && snap.location_id !== selectedLocationId) return false;
             return catItems.some(i => i.id === snap.item_id);
           })
-          .reduce((sum, snap) => sum + (snap.inventory_value || 0), 0)
+          .reduce((sum, snap) => sum + getInventorySnapshotValue(snap), 0)
       : locInv
           .filter(li => catItems.some(i => i.id === li.item_id))
           .reduce((sum, li) => {
             const item = items.find(i => i.id === li.item_id);
-            return sum + (li.on_hand_quantity || 0) * (item?.unit_cost || 0);
+            const loc = locations.find(l => l.id === li.location_id);
+            return sum + getInventoryItemValue(item, li.on_hand_quantity || 0, loc);
           }, 0);
     return { name: cat, value: parseFloat(val.toFixed(2)), color: COLORS[idx % COLORS.length] };
   });

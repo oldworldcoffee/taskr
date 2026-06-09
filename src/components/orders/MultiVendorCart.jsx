@@ -4,9 +4,10 @@ import { Search, ShoppingCart, RefreshCw, PackageOpen, Sparkles, ChevronRight, C
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import VendorOptionSelector from './VendorOptionSelector.jsx?v=taskr-inventory-orders-20260609';
+import VendorOptionSelector from './VendorOptionSelector.jsx?v=taskr-stock-today-20260609';
 import VariantSelectionDialog from './VariantSelectionDialog';
 import { getVendorCommissaryLocationId, isCommissaryLocation } from '@/lib/inventoryLocations';
+import { getOrderUnit, pluralizeUnit } from '@/lib/inventoryOrderUnits';
 
 export default function MultiVendorCart({
   locations, vendors, items, locInv,
@@ -69,6 +70,13 @@ export default function MultiVendorCart({
     const preferred = (item.purchase_options || []).find(p => p.is_preferred && p.vendor_id === vendorId) || 
                      (item.purchase_options || []).find(p => p.vendor_id === vendorId);
     return preferred?.unit_cost || item.unit_cost || 0;
+  };
+
+  const getUnitLabelForDisplay = (item, vendorId) => getOrderUnit(item, vendorId).label;
+
+  const getCartUnitLabel = (cartItem, vendorId) => {
+    const catalogItem = items.find(i => i.id === cartItem.item_id) || {};
+    return cartItem.order_unit_label || cartItem.unit_of_measure || getOrderUnit(catalogItem, vendorId).label;
   };
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -224,12 +232,13 @@ export default function MultiVendorCart({
                       <div className="p-4 text-center text-xs text-muted-foreground">No items</div>
                     ) : itemsInCart.map((item) => {
                       const originalIdx = vendorCart.findIndex(c => c.item_id === item.item_id);
+                      const unitLabel = getCartUnitLabel(item, vendorId);
                       return (
                         <div key={item.item_id} className="p-2 flex flex-col gap-1.5">
                           <div className="flex items-start justify-between gap-1">
                             <div className="flex-1 min-w-0">
                               <p className="text-xs font-medium leading-tight truncate">{item.item_name}</p>
-                              <p className="text-xs text-muted-foreground">${item.unit_cost.toFixed(2)} / {item.unit_of_measure}</p>
+                              <p className="text-xs text-muted-foreground">${item.unit_cost.toFixed(2)} / {unitLabel}</p>
                             </div>
                             <button onClick={() => onRemove(vendorId, originalIdx)} className="text-muted-foreground hover:text-destructive transition-colors p-0.5">
                               <X className="w-3.5 h-3.5" />
@@ -240,6 +249,7 @@ export default function MultiVendorCart({
                               <button onClick={() => onUpdateQty(vendorId, originalIdx, item.qty - 1)} className="w-5 h-5 rounded border border-input flex items-center justify-center hover:bg-muted transition-colors text-xs">−</button>
                               <span className="w-8 text-center text-xs">{item.qty}</span>
                               <button onClick={() => onUpdateQty(vendorId, originalIdx, item.qty + 1)} className="w-5 h-5 rounded border border-input flex items-center justify-center hover:bg-muted transition-colors text-xs">+</button>
+                              <span className="text-xs text-muted-foreground ml-1">{pluralizeUnit(unitLabel, item.qty)}</span>
                             </div>
                             <span className="text-xs font-semibold text-primary">${item.total_cost.toFixed(2)}</span>
                           </div>
@@ -248,9 +258,10 @@ export default function MultiVendorCart({
                             currentVendorId={vendorId}
                             onSelectVendor={(newVendorId, newCost) => {
                               const cartItem = vendorCart[originalIdx];
+                              const catalogItem = items.find(i => i.id === cartItem?.item_id);
                               if (cartItem) {
                                 onRemove(vendorId, originalIdx);
-                                onAddToCart({ ...cartItem, vendor_id: newVendorId, unit_cost: newCost, total_cost: cartItem.qty * newCost }, newVendorId);
+                                onAddToCart(catalogItem || { ...cartItem, id: cartItem.item_id, name: cartItem.item_name, vendor_id: newVendorId, unit_cost: newCost }, newVendorId, cartItem.qty);
                               }
                             }}
                             locations={locations}
@@ -370,6 +381,7 @@ export default function MultiVendorCart({
                   const onHand = li?.on_hand_quantity ?? null;
                   const par = li?.par_level ?? null;
                   const cost = getUnitCostForDisplay(firstItem, vendorId);
+                  const unitLabel = getUnitLabelForDisplay(firstItem, vendorId);
                   const inCart = (carts[vendorId] || []).some(c => group.items.some(gi => gi.id === c.item_id));
                   return (
                     <div key={group.group_id} className={`rounded-lg border p-2.5 flex flex-col gap-1.5 ${inCart ? 'border-primary/50 bg-primary/5' : 'border-border bg-background'}`}>
@@ -377,7 +389,7 @@ export default function MultiVendorCart({
                         <p className="text-xs font-medium leading-tight flex-1">{group.name}</p>
                         {inCart && <span className="text-[10px] bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 shrink-0">✓</span>}
                       </div>
-                      <p className="text-[10px] text-muted-foreground">{group.items.length} variants · ${cost.toFixed(2)}</p>
+                      <p className="text-[10px] text-muted-foreground">{group.items.length} variants · ${cost.toFixed(2)} / {unitLabel}</p>
                       {selectedLocation && onHand !== null && (
                         <p className={`text-[10px] ${onHand < (par || 0) ? 'text-orange-500 font-medium' : 'text-muted-foreground'}`}>{onHand} on hand{par ? ` / ${par} par` : ''}</p>
                       )}
@@ -394,6 +406,7 @@ export default function MultiVendorCart({
                   const onHand = li?.on_hand_quantity ?? null;
                   const par = li?.par_level ?? null;
                   const cost = getUnitCostForDisplay(item, vendorId);
+                  const unitLabel = getUnitLabelForDisplay(item, vendorId);
                   const inCart = (carts[vendorId] || []).some(c => c.item_id === item.id);
                   return (
                     <div key={item.id} className={`rounded-lg border p-2.5 flex flex-col gap-1.5 ${inCart ? 'border-primary/50 bg-primary/5' : 'border-border bg-background'}`}>
@@ -401,7 +414,7 @@ export default function MultiVendorCart({
                         <p className="text-xs font-medium leading-tight flex-1">{item.name}</p>
                         {inCart && <span className="text-[10px] bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 shrink-0">✓</span>}
                       </div>
-                      <p className="text-[10px] text-muted-foreground">${cost.toFixed(2)} / {item.unit_of_measure}</p>
+                      <p className="text-[10px] text-muted-foreground">${cost.toFixed(2)} / {unitLabel}</p>
                       {selectedLocation && onHand !== null && (
                         <p className={`text-[10px] ${onHand < (par || 0) ? 'text-orange-500 font-medium' : 'text-muted-foreground'}`}>{onHand} on hand{par ? ` / ${par} par` : ''}</p>
                       )}
@@ -546,6 +559,7 @@ export default function MultiVendorCart({
                 const onHand = li?.on_hand_quantity ?? null;
                 const par = li?.par_level ?? null;
                 const cost = getUnitCostForDisplay(firstItem, vendorId);
+                const unitLabel = getUnitLabelForDisplay(firstItem, vendorId);
                 
                 // Check if any variant is in cart
                 const vendorCart = vendorId ? (carts[vendorId] || []) : [];
@@ -571,7 +585,7 @@ export default function MultiVendorCart({
                     </div>
 
                     <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      <span>${cost.toFixed(2)} / {firstItem.unit_of_measure}</span>
+                      <span>${cost.toFixed(2)} / {unitLabel}</span>
                       {selectedLocation && onHand !== null && (
                         <span className={onHand < (par || 0) ? 'text-orange-500 font-medium' : ''}>
                           {onHand} on hand {par ? `/ ${par} par` : ''}
@@ -614,6 +628,7 @@ export default function MultiVendorCart({
                 const onHand = li?.on_hand_quantity ?? null;
                 const par = li?.par_level ?? null;
                 const cost = getUnitCostForDisplay(item, vendorId);
+                const unitLabel = getUnitLabelForDisplay(item, vendorId);
                 const vendorCart = vendorId ? (carts[vendorId] || []) : [];
                 const inCart = vendorCart?.some(c => c.item_id === item.id);
 
@@ -636,7 +651,7 @@ export default function MultiVendorCart({
                     </div>
 
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>${cost.toFixed(2)} / {item.unit_of_measure}</span>
+                      <span>${cost.toFixed(2)} / {unitLabel}</span>
                       {selectedLocation && onHand !== null && (
                         <span className={onHand < (par || 0) ? 'text-orange-500 font-medium' : ''}>
                           {onHand} on hand {par ? `/ ${par} par` : ''}

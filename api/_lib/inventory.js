@@ -117,6 +117,28 @@ function toBool(value, fallback = false) {
   return ['yes', 'true', '1', 'y', 'active'].includes(normalized);
 }
 
+function isCommissaryLocation(location, settings = []) {
+  const setting = settings.find((row) => row.location_id === location?.id);
+  return (setting?.type || location?.type) === 'commissary';
+}
+
+function inventorySnapshotUnitCost(item, location, settings = []) {
+  const commissaryPrice = Number(item?.commissary_price || 0);
+  if (item?.is_commissary_item && !isCommissaryLocation(location, settings) && commissaryPrice > 0) {
+    return commissaryPrice;
+  }
+
+  const options = item?.purchase_options || [];
+  const preferred = options.find((option) => option.is_preferred) || options[0] || null;
+  const packUnits = Number(preferred?.inner_pack_units || item?.inner_pack_units || 1);
+  const packsPerCase = Number(preferred?.packs_per_case || item?.packs_per_case || 0);
+  const unitCost = Number(preferred?.unit_cost || item?.unit_cost || 0);
+
+  if (packsPerCase && packUnits) return unitCost / (packUnits * packsPerCase);
+  if (packUnits > 1) return unitCost / packUnits;
+  return unitCost;
+}
+
 function makePdf(title, lines) {
   const escapePdf = (value) => String(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
   const visibleLines = [title, `Generated: ${new Date().toLocaleDateString()}`, '', ...lines].slice(0, 42);
@@ -559,9 +581,12 @@ async function scrapeProductImage(body) {
 
 async function createDailySnapshot(client, user) {
   const companyId = user.company_id;
-  const date = new Date().toISOString().slice(0, 10);
-  const [locations, items, stock] = await Promise.all([
+  const snapshotDay = new Date();
+  snapshotDay.setDate(snapshotDay.getDate() - 1);
+  const date = snapshotDay.toISOString().slice(0, 10);
+  const [locations, settings, items, stock] = await Promise.all([
     fetchCompanyRows(client, 'locations', companyId),
+    fetchCompanyRows(client, 'inventory_location_settings', companyId),
     fetchCompanyRows(client, 'inventory_items', companyId),
     fetchCompanyRows(client, 'inventory_location_stock', companyId),
   ]);
@@ -578,13 +603,14 @@ async function createDailySnapshot(client, user) {
       if (existing.error) throw existing.error;
       if (existing.data) continue;
       const stockRow = stock.find((row) => row.location_id === location.id && row.item_id === item.id);
+      const unitCost = inventorySnapshotUnitCost(item, location, settings);
       await createRecord(client, 'inventory_snapshots', {
         company_id: companyId,
         snapshot_date: date,
         location_id: location.id,
         item_id: item.id,
         quantity_on_hand: Number(stockRow?.on_hand_quantity || 0),
-        unit_cost: Number(item.unit_cost || 0),
+        unit_cost: unitCost,
       });
       created += 1;
     }
