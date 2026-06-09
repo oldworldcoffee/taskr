@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
+import { enrichLocationsWithInventorySettings } from '@/lib/inventoryLocations';
+import { getInventoryItemValue } from '@/lib/inventoryValue';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { Plus, ClipboardList, CheckCircle, ChevronRight, Eye, Pencil, Package, Trash2, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -95,13 +97,15 @@ export default function InventoryCounts() {
 
   const load = () => Promise.all([
     base44.entities.Location.list(),
+    base44.entities.InventoryLocationSetting.list(),
     base44.entities.InventoryItem.filter({ is_active: true }),
     base44.entities.LocationInventory.list(),
     base44.entities.StorageArea.list(),
     base44.entities.ItemStorageArea.list(),
     base44.entities.InventoryCount.list('-created_date', 50),
-  ]).then(async ([locs, itms, linv, areas, mappings, cnts]) => {
-    const accessibleLocs = locs.filter(l => canAccessLocation(l.id));
+  ]).then(async ([locs, settings, itms, linv, areas, mappings, cnts]) => {
+    const enrichedLocs = enrichLocationsWithInventorySettings(locs, settings);
+    const accessibleLocs = enrichedLocs.filter(l => canAccessLocation(l.id));
     const accessibleLocIds = new Set(accessibleLocs.map(l => l.id));
     setLocations(accessibleLocs);
     setItems(itms);
@@ -294,16 +298,10 @@ export default function InventoryCounts() {
 
 
   // Value helper — on_hand is in base units (EA); unit_cost may be per case
-  const getItemValue = (itemId, onHand) => {
+  const getItemValue = (itemId, onHand, locationId = activeCount?.location_id || form.location_id) => {
     const item = items.find(i => i.id === itemId);
-    if (!item || !onHand) return 0;
-    const preferred = item.purchase_options?.find(o => o.is_preferred) || item.purchase_options?.[0];
-    const packUnits = preferred?.inner_pack_units || item.inner_pack_units || 1;
-    const packsPerCase = preferred?.packs_per_case || item.packs_per_case;
-    const unitCost = preferred?.unit_cost || item.unit_cost || 0;
-    if (packsPerCase && packUnits) return (onHand / (packUnits * packsPerCase)) * unitCost;
-    if (packUnits > 1) return (onHand / packUnits) * unitCost;
-    return onHand * unitCost;
+    const location = locations.find(l => l.id === locationId);
+    return getInventoryItemValue(item, onHand, location);
   };
 
   const getCountUnits = (item, variant = null) => {
@@ -1448,7 +1446,7 @@ export default function InventoryCounts() {
             <div className="bg-card border border-border rounded-xl px-4 py-8 text-center text-muted-foreground text-sm">No counts yet. Start your first inventory count.</div>
           ) : counts.map(c => {
             const usedAreas = [...new Set((c.items || []).flatMap(i => (i.area_counts || []).map(ac => ac.area_name)))].filter(Boolean);
-            const totalValue = (c.items || []).reduce((s, r) => s + getItemValue(r.item_id, r.counted_quantity || 0), 0);
+            const totalValue = (c.items || []).reduce((s, r) => s + getItemValue(r.item_id, r.counted_quantity || 0, c.location_id), 0);
             return (
               <div key={c.id} className="bg-card border border-border rounded-xl p-4 space-y-3">
                 <div className="flex items-start justify-between gap-2">
@@ -1498,7 +1496,7 @@ export default function InventoryCounts() {
                     <td className="px-4 py-3 capitalize">{c.count_type}{c.categories?.length > 0 && <span className="text-muted-foreground ml-1 text-xs">({c.categories.join(', ')})</span>}</td>
                     <td className="px-4 py-3 text-muted-foreground">{usedAreas.length > 0 ? usedAreas.join(', ') : '—'}</td>
                     <td className="px-4 py-3 text-muted-foreground">{c.items?.length || 0} items</td>
-                    <td className="px-4 py-3 font-medium text-green-700">${(c.items || []).reduce((s, r) => s + getItemValue(r.item_id, r.counted_quantity || 0), 0).toFixed(2)}</td>
+                    <td className="px-4 py-3 font-medium text-green-700">${(c.items || []).reduce((s, r) => s + getItemValue(r.item_id, r.counted_quantity || 0, c.location_id), 0).toFixed(2)}</td>
                     <td className="px-4 py-3"><StatusBadge status={c.status} /></td>
                     <td className="px-4 py-3">
                       {c.status === 'draft' ? (

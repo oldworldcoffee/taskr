@@ -79,6 +79,7 @@ export default function Commissary() {
   // Auto-select commissary if only one managed, else require selection
   const managedCommissaryIds = getManagedCommissaryLocationIds();
   const commissaryLocs = locations.filter(l => isCommissaryLocation(l) && managedCommissaryIds.includes(l.id));
+  const effectiveCommissaryId = selectedCommissaryId || commissaryLocs[0]?.id || '';
 
   useEffect(() => {
     if (commissaryLocs.length === 1 && !selectedCommissaryId) {
@@ -301,9 +302,6 @@ export default function Commissary() {
 
   return (
     <div className={isMobile ? "p-4 max-w-full" : "p-6 max-w-7xl mx-auto"}>
-      <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded text-xs font-mono">
-        <strong>VARIANTS DEBUG:</strong> Total variants loaded: {variants.length} | Items: {items.length} | Items with is_commissary_item: {items.filter(i => i.is_commissary_item).length}
-      </div>
       <PageHeader
         title="Commissary"
         subtitle="Internal orders and fulfillment between commissary and locations"
@@ -478,13 +476,6 @@ export default function Commissary() {
             </div>
             {cartForm.items.length > 0 && (
               <div>
-                <div className="mb-3 p-3 bg-yellow-50 border border-yellow-200 rounded text-xs font-mono">
-                  <strong>DEBUG:</strong><br/>
-                  Variants in DB: {variants.length}<br/>
-                  Cart items: {cartForm.items.length}<br/>
-                  Items with variant_id: {cartForm.items.filter(i => i.variant_id).length}<br/>
-                  First item: {cartForm.items[0]?.item_name}
-                </div>
                 <Label className="mb-2 block">Items (auto-filled to par, commissary pricing)</Label>
                 <div className="border border-border rounded-lg overflow-hidden">
                   <table className="w-full text-sm">
@@ -663,7 +654,7 @@ export default function Commissary() {
         open={!!fulfillmentDialog}
         onOpenChange={() => setFulfillmentDialog(null)}
         order={fulfillmentDialog}
-        commissaryLocationId={selectedCommissaryId || commissaryLoc?.id}
+        commissaryLocationId={effectiveCommissaryId}
         onFulfilled={handleFulfilled}
       />
 

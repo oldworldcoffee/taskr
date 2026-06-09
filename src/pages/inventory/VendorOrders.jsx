@@ -14,10 +14,11 @@ import { Textarea } from '@/components/ui/textarea';
 import PageHeader from '@/components/layout/PageHeader';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { format } from 'date-fns';
-import MultiVendorCart from '@/components/orders/MultiVendorCart.jsx?v=taskr-inventory-orders-20260609';
+import MultiVendorCart from '@/components/orders/MultiVendorCart.jsx?v=taskr-stock-today-20260609';
 import OrderHistory from '@/components/orders/OrderHistory';
 import SmartFillDialog from '@/components/orders/SmartFillDialog';
 import AIReviewDialog from '@/components/orders/AIReviewDialog';
+import { getOrderUnit, toStockQuantity } from '@/lib/inventoryOrderUnits';
 
 
 export default function VendorOrders() {
@@ -126,6 +127,71 @@ export default function VendorOrders() {
     return preferred?.unit_cost || item.unit_cost || 0;
   };
 
+  const getCatalogItem = (itemId) => items.find(i => i.id === itemId) || null;
+
+  const getCartItemDetails = (cartItem) => {
+    const catalogItem = getCatalogItem(cartItem.item_id || cartItem.id) || {};
+    return {
+      ...catalogItem,
+      ...cartItem,
+      id: cartItem.item_id || cartItem.id,
+      name: cartItem.item_name || cartItem.name || catalogItem.name,
+      item_name: cartItem.item_name || cartItem.name || catalogItem.name,
+      unit_of_measure: cartItem.base_unit_of_measure || catalogItem.unit_of_measure || cartItem.unit_of_measure,
+      purchase_options: cartItem.purchase_options?.length ? cartItem.purchase_options : catalogItem.purchase_options || [],
+      count_units: cartItem.count_units?.length ? cartItem.count_units : catalogItem.count_units || [],
+      inner_pack_name: cartItem.inner_pack_name || catalogItem.inner_pack_name,
+      inner_pack_units: cartItem.inner_pack_units || catalogItem.inner_pack_units,
+      packs_per_case: cartItem.packs_per_case || catalogItem.packs_per_case,
+    };
+  };
+
+  const buildCartItem = ({ item, vendorId, qty, unitCost, onHand = 0, parLevel = 0 }) => {
+    const orderUnit = getOrderUnit(item, vendorId);
+    return {
+      item_id: item.id,
+      item_name: item.name,
+      category: item.category,
+      unit_of_measure: orderUnit.label,
+      base_unit_of_measure: orderUnit.baseUnit,
+      order_unit_label: orderUnit.label,
+      order_unit_multiplier: orderUnit.multiplier,
+      stock_quantity_ordered: toStockQuantity(qty, orderUnit),
+      unit_cost: unitCost,
+      qty,
+      total_cost: qty * unitCost,
+      on_hand: onHand,
+      par_level: parLevel,
+      purchase_options: item.purchase_options || [],
+      selected_purchase_option: orderUnit.option || null,
+      variant_id: item.variant_id || null,
+      variant_name: item.variant_name || null,
+    };
+  };
+
+  const buildOrderItem = (cartItem, vendorId) => {
+    const itemDetails = getCartItemDetails(cartItem);
+    const orderUnit = getOrderUnit(itemDetails, vendorId);
+    const qty = Number(cartItem.qty || 0);
+
+    return {
+      item_id: cartItem.item_id,
+      item_name: cartItem.item_name,
+      category: cartItem.category,
+      unit_of_measure: cartItem.order_unit_label || orderUnit.label,
+      base_unit_of_measure: cartItem.base_unit_of_measure || orderUnit.baseUnit,
+      order_unit_label: cartItem.order_unit_label || orderUnit.label,
+      order_unit_multiplier: cartItem.order_unit_multiplier || orderUnit.multiplier,
+      stock_quantity_ordered: cartItem.stock_quantity_ordered ?? toStockQuantity(qty, orderUnit),
+      quantity_ordered: qty,
+      unit_cost: cartItem.unit_cost,
+      total_cost: cartItem.total_cost,
+      selected_purchase_option: cartItem.selected_purchase_option || orderUnit.option || null,
+      variant_id: cartItem.variant_id || null,
+      variant_quantities: cartItem.variant_quantities || null,
+    };
+  };
+
   const fillToPars = (useAI = false) => {
     if (!selectedLocation) return;
     
@@ -150,21 +216,21 @@ export default function VendorOrders() {
         if (!newCarts[vendorId]) newCarts[vendorId] = [];
         const existing = newCarts[vendorId].findIndex(c => c.item_id === item.id);
         const unitCost = getUnitCostForItem(item, vendorId);
+        const orderUnit = getOrderUnit(item, vendorId);
+        const orderQty = Math.ceil(needed / Math.max(orderUnit.multiplier || 1, 1));
+        const nextCartItem = buildCartItem({
+          item,
+          vendorId,
+          qty: orderQty,
+          unitCost,
+          onHand,
+          parLevel: par,
+        });
         
         if (existing >= 0) {
-          newCarts[vendorId][existing] = { ...newCarts[vendorId][existing], qty: needed, total_cost: needed * unitCost };
+          newCarts[vendorId][existing] = { ...newCarts[vendorId][existing], ...nextCartItem };
         } else {
-          newCarts[vendorId].push({
-            item_id: item.id,
-            item_name: item.name,
-            category: item.category,
-            unit_of_measure: item.unit_of_measure,
-            unit_cost: unitCost,
-            qty: needed,
-            total_cost: needed * unitCost,
-            on_hand: onHand,
-            par_level: par,
-          });
+          newCarts[vendorId].push(nextCartItem);
         }
       }
     });
@@ -191,21 +257,21 @@ export default function VendorOrders() {
         if (!newCarts[vendorId]) newCarts[vendorId] = [];
         const existing = newCarts[vendorId].findIndex(c => c.item_id === item.id);
         const unitCost = getUnitCostForItem(item, vendorId);
+        const orderUnit = getOrderUnit(item, vendorId);
+        const orderQty = Math.ceil(needed / Math.max(orderUnit.multiplier || 1, 1));
+        const nextCartItem = buildCartItem({
+          item,
+          vendorId,
+          qty: orderQty,
+          unitCost,
+          onHand,
+          parLevel: aiPar,
+        });
         
         if (existing >= 0) {
-          newCarts[vendorId][existing] = { ...newCarts[vendorId][existing], qty: needed, total_cost: needed * unitCost };
+          newCarts[vendorId][existing] = { ...newCarts[vendorId][existing], ...nextCartItem };
         } else {
-          newCarts[vendorId].push({
-            item_id: item.id,
-            item_name: item.name,
-            category: item.category,
-            unit_of_measure: item.unit_of_measure,
-            unit_cost: unitCost,
-            qty: needed,
-            total_cost: needed * unitCost,
-            on_hand: onHand,
-            par_level: aiPar,
-          });
+          newCarts[vendorId].push(nextCartItem);
         }
       }
     });
@@ -234,24 +300,27 @@ export default function VendorOrders() {
       const unitCost = getUnitCostForItem(item, targetVendor);
       
       if (existing >= 0) {
+        const nextQty = (newCarts[targetVendor][existing].qty || 0) + qty;
         newCarts[targetVendor][existing] = {
           ...newCarts[targetVendor][existing],
-          qty: (newCarts[targetVendor][existing].qty || 0) + qty,
-          total_cost: ((newCarts[targetVendor][existing].qty || 0) + qty) * unitCost,
+          ...buildCartItem({
+            item,
+            vendorId: targetVendor,
+            qty: nextQty,
+            unitCost,
+            onHand: newCarts[targetVendor][existing].on_hand,
+            parLevel: newCarts[targetVendor][existing].par_level,
+          }),
         };
       } else {
-        newCarts[targetVendor].push({
-          item_id: item.id,
-          item_name: item.name,
-          category: item.category,
-          unit_of_measure: item.unit_of_measure,
-          unit_cost: unitCost,
-          qty: qty,
-          total_cost: qty * unitCost,
-          on_hand: li?.on_hand_quantity || 0,
-          par_level: li?.par_level || 0,
-          purchase_options: item.purchase_options || [],
-        });
+        newCarts[targetVendor].push(buildCartItem({
+          item,
+          vendorId: targetVendor,
+          qty,
+          unitCost,
+          onHand: li?.on_hand_quantity || 0,
+          parLevel: li?.par_level || 0,
+        }));
       }
       return newCarts;
     });
@@ -266,7 +335,14 @@ export default function VendorOrders() {
     const qty = Math.max(0, parseFloat(val) || 0);
     const newCarts = { ...carts };
     if (!newCarts[vendorId]) return;
-    newCarts[vendorId][idx] = { ...newCarts[vendorId][idx], qty, total_cost: qty * newCarts[vendorId][idx].unit_cost };
+    const current = newCarts[vendorId][idx];
+    const orderUnit = getOrderUnit(getCartItemDetails(current), vendorId);
+    newCarts[vendorId][idx] = {
+      ...current,
+      qty,
+      total_cost: qty * current.unit_cost,
+      stock_quantity_ordered: toStockQuantity(qty, orderUnit),
+    };
     setCarts(newCarts);
   };
 
@@ -291,19 +367,30 @@ export default function VendorOrders() {
   const editDraftOrder = (order) => {
     const vendorId = order.vendor_id;
     setCarts({
-      [vendorId]: (order.items || []).map(i => ({
-        item_id: i.item_id,
-        item_name: i.item_name,
-        category: i.category,
-        unit_of_measure: i.unit_of_measure,
-        unit_cost: i.unit_cost,
-        qty: i.quantity_ordered,
-        total_cost: i.total_cost,
-        on_hand: 0,
-        par_level: 0,
-        variant_id: i.variant_id || null,
-        variant_quantities: i.variant_quantities || null,
-      }))
+      [vendorId]: (order.items || []).map(i => {
+        const itemDetails = getCartItemDetails(i);
+        const orderUnit = getOrderUnit(itemDetails, vendorId);
+        const qty = Number(i.quantity_ordered || 0);
+        return {
+          item_id: i.item_id,
+          item_name: i.item_name,
+          category: i.category,
+          unit_of_measure: i.order_unit_label || orderUnit.label,
+          base_unit_of_measure: i.base_unit_of_measure || orderUnit.baseUnit,
+          order_unit_label: i.order_unit_label || orderUnit.label,
+          order_unit_multiplier: i.order_unit_multiplier || orderUnit.multiplier,
+          stock_quantity_ordered: i.stock_quantity_ordered ?? toStockQuantity(qty, orderUnit),
+          unit_cost: i.unit_cost,
+          qty,
+          total_cost: i.total_cost,
+          on_hand: 0,
+          par_level: 0,
+          selected_purchase_option: i.selected_purchase_option || orderUnit.option || null,
+          purchase_options: itemDetails.purchase_options || [],
+          variant_id: i.variant_id || null,
+          variant_quantities: i.variant_quantities || null,
+        };
+      })
     });
     setSelectedLocation(order.location_id);
     setSelectedVendor(vendorId);
@@ -313,17 +400,7 @@ export default function VendorOrders() {
   const updateDraftOrder = async () => {
     const vendorId = editDialog.vendor_id;
     const vendorCart = carts[vendorId] || [];
-    const orderItems = vendorCart.filter(i => i.qty > 0).map(i => {
-      const baseItem = {
-        item_id: i.item_id,
-        item_name: i.item_name,
-        unit_of_measure: i.unit_of_measure,
-        quantity_ordered: i.qty,
-        unit_cost: i.unit_cost,
-        total_cost: i.total_cost,
-      };
-      return baseItem;
-    });
+    const orderItems = vendorCart.filter(i => i.qty > 0).map(i => buildOrderItem(i, vendorId));
     const totalAmount = vendorCart.reduce((s, i) => s + i.total_cost, 0);
     await base44.entities.Order.update(editDialog.id, {
       items: orderItems,
@@ -348,17 +425,7 @@ export default function VendorOrders() {
 
   const createOrder = async (vendorId) => {
     const vendorCart = carts[vendorId] || [];
-    const orderItems = vendorCart.filter(i => i.qty > 0).map(i => {
-      const baseItem = {
-        item_id: i.item_id,
-        item_name: i.item_name,
-        unit_of_measure: i.unit_of_measure,
-        quantity_ordered: i.qty,
-        unit_cost: i.unit_cost,
-        total_cost: i.total_cost,
-      };
-      return baseItem;
-    });
+    const orderItems = vendorCart.filter(i => i.qty > 0).map(i => buildOrderItem(i, vendorId));
     
     // Determine order type based on vendor
     const vendor = vendors.find(v => v.id === vendorId);
@@ -481,8 +548,13 @@ export default function VendorOrders() {
           item_id: i.item_id,
           item_name: i.item_name,
           unit_of_measure: i.unit_of_measure,
+          base_unit_of_measure: i.base_unit_of_measure,
+          order_unit_label: i.order_unit_label,
+          order_unit_multiplier: i.order_unit_multiplier,
           quantity_ordered: i.quantity_ordered,
+          stock_quantity_ordered: i.stock_quantity_ordered,
           quantity_fulfilled: i.quantity_ordered,
+          stock_quantity_fulfilled: i.stock_quantity_ordered,
           unit_cost: i.unit_cost,
           total_cost: i.total_cost,
         })),

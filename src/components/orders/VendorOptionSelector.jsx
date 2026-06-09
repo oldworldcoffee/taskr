@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useState } from 'react';
 import { isCommissaryLocation } from '@/lib/inventoryLocations';
+import { getOrderUnit } from '@/lib/inventoryOrderUnits';
 
 export default function VendorOptionSelector({ item, currentVendorId, onSelectVendor, locations, selectedLocation }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -86,6 +87,7 @@ export default function VendorOptionSelector({ item, currentVendorId, onSelectVe
             const priceDiff = option.unit_cost - currentOption.unit_cost;
             const isCurrentCheaper = priceDiff < 0;
             const isCurrentMoreExpensive = priceDiff > 0;
+            const orderUnit = getOrderUnit(item, option);
             
             return (
               <div
@@ -112,7 +114,7 @@ export default function VendorOptionSelector({ item, currentVendorId, onSelectVe
                   </div>
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className="text-xs text-muted-foreground">
-                      ${option.unit_cost.toFixed(2)} / {option.unit_of_measure}
+                      ${option.unit_cost.toFixed(2)} / {orderUnit.label}
                     </span>
                     {option.product_code && (
                       <span className="text-[10px] text-muted-foreground">{option.product_code}</span>

@@ -1,7 +1,9 @@
 import { useState, useEffect, Fragment } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
-import { Search, Pencil, AlertTriangle, CheckCircle, Plus, Trash2, MapPin, GripVertical, ChevronRight, ArrowUpDown, ArrowDownAZ, TrendingUp, RefreshCw } from 'lucide-react';
+import { enrichLocationsWithInventorySettings } from '@/lib/inventoryLocations';
+import { getInventoryItemValue, getInventorySnapshotValue } from '@/lib/inventoryValue';
+import { Search, Pencil, AlertTriangle, CheckCircle, Plus, Trash2, MapPin, GripVertical, ChevronRight, ArrowUpDown, ArrowDownAZ, TrendingUp, Calendar, X } from 'lucide-react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -9,6 +11,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Label } from '@/components/ui/label';
 import PageHeader from '@/components/layout/PageHeader';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
+
+function getLocalTodayDate() {
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  return now.toISOString().slice(0, 10);
+}
 
 export default function LocationStock() {
   const { canAccessLocation } = useAuth();
@@ -28,16 +36,23 @@ export default function LocationStock() {
   const [sortMode, setSortMode] = useState('manual'); // manual, alpha, count
   const [addItemsDialog, setAddItemsDialog] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [snapshotDate, setSnapshotDate] = useState(() => getLocalTodayDate());
+  const [snapshotRows, setSnapshotRows] = useState([]);
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
 
+  const todayDate = getLocalTodayDate();
+  const isTodaySnapshotDate = snapshotDate === todayDate;
 
   const load = () => Promise.all([
     base44.entities.Location.list(),
+    base44.entities.InventoryLocationSetting.list(),
     base44.entities.InventoryItem.list(),
     base44.entities.LocationInventory.list(),
     base44.entities.StorageArea.list(),
     base44.entities.ItemStorageArea.list(),
-  ]).then(([locs, itms, linv, areas, mappings]) => {
-    const filteredLocs = locs.filter(l => canAccessLocation(l.id));
+  ]).then(([locs, settings, itms, linv, areas, mappings]) => {
+    const enrichedLocs = enrichLocationsWithInventorySettings(locs, settings);
+    const filteredLocs = enrichedLocs.filter(l => canAccessLocation(l.id));
     setLocations(filteredLocs);
     setItems(itms);
     setLocInv(linv);
@@ -52,6 +67,31 @@ export default function LocationStock() {
   useEffect(() => { 
     load();
   }, []);
+
+  useEffect(() => {
+    if (!selectedLoc || !snapshotDate || isTodaySnapshotDate) {
+      setSnapshotRows([]);
+      setSnapshotLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSnapshotLoading(true);
+    base44.entities.InventorySnapshot.filter({
+      location_id: selectedLoc,
+      snapshot_date: snapshotDate,
+    }).then((snapshots) => {
+      if (!cancelled) setSnapshotRows(snapshots || []);
+    }).catch(() => {
+      if (!cancelled) setSnapshotRows([]);
+    }).finally(() => {
+      if (!cancelled) setSnapshotLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedLoc, snapshotDate, isTodaySnapshotDate]);
 
   // Reload data when page gains focus or becomes visible (e.g., after returning from Inventory Counts)
   useEffect(() => {
@@ -212,8 +252,22 @@ export default function LocationStock() {
     setEditRow(null);
   };
 
-  // Group items by product_group_id
-  const groupedItems = items.filter(i => i.is_active).reduce((acc, item) => {
+  const matchesSearch = (item) => {
+    const term = search.trim().toLowerCase();
+    if (!term) return true;
+    return (
+      item.name?.toLowerCase().includes(term) ||
+      item.category?.toLowerCase().includes(term)
+    );
+  };
+
+  const allRows = getLocInv(selectedLoc);
+  const rows = allRows.filter(r => matchesSearch(r.item));
+  const visibleItems = rows.map(r => r.item);
+  const selectedLocation = locations.find(l => l.id === selectedLoc);
+
+  // Group visible items by product_group_id
+  const groupedItems = visibleItems.filter(i => i.is_active).reduce((acc, item) => {
     const groupId = item.product_group_id || `standalone_${item.id}`;
     if (!acc[groupId]) {
       acc[groupId] = {
@@ -227,25 +281,18 @@ export default function LocationStock() {
     return acc;
   }, {});
 
-  const rows = getLocInv(selectedLoc).filter(r =>
-    r.item.name?.toLowerCase().includes(search.toLowerCase()) ||
-    r.item.category?.toLowerCase().includes(search.toLowerCase())
-  );
-
   const getItemValue = (item, onHand) => {
-    const preferred = item.purchase_options?.find(o => o.is_preferred) || item.purchase_options?.[0];
-    const packUnits = preferred?.inner_pack_units || item.inner_pack_units || 1;
-    const packsPerCase = preferred?.packs_per_case || item.packs_per_case;
-    const unitCost = preferred?.unit_cost || item.unit_cost || 0;
-    if (packsPerCase && packUnits) {
-      const unitsPerCase = packUnits * packsPerCase;
-      return (onHand / unitsPerCase) * unitCost;
-    } else if (packUnits && packUnits > 1) {
-      return (onHand / packUnits) * unitCost;
-    }
-    return onHand * unitCost;
+    return getInventoryItemValue(item, onHand, selectedLocation);
   };
-  const locValue = rows.reduce((sum, r) => sum + getItemValue(r.item, r.li.on_hand_quantity || 0), 0);
+  const liveLocValue = allRows.reduce((sum, r) => sum + getItemValue(r.item, r.li.on_hand_quantity || 0), 0);
+  const snapshotValue = snapshotRows.reduce((sum, row) => sum + getInventorySnapshotValue(row), 0);
+  const hasSnapshotDate = Boolean(snapshotDate);
+  const isHistoricalSnapshotDate = hasSnapshotDate && !isTodaySnapshotDate;
+  const hasSnapshotRows = snapshotRows.length > 0;
+  const locValue = isHistoricalSnapshotDate && hasSnapshotRows ? snapshotValue : liveLocValue;
+  const locValueLabel = isHistoricalSnapshotDate && !snapshotLoading && !hasSnapshotRows
+    ? 'No snapshot'
+    : `$${locValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const isMobile = useIsMobile();
 
@@ -254,11 +301,6 @@ export default function LocationStock() {
       <PageHeader 
         title="Location Stock" 
         subtitle="On-hand quantities, par levels, and storage areas per location"
-        actions={
-          <Button variant="outline" size="sm" onClick={load}>
-            <RefreshCw className="w-3.5 h-3.5 mr-1" />Refresh
-          </Button>
-        }
       />
 
       {/* Location selector */}
@@ -277,9 +319,38 @@ export default function LocationStock() {
       {selectedLoc && (
         <div className="flex flex-wrap items-start gap-4 mb-6">
           {/* Inventory value */}
-          <div className="bg-primary/5 border border-primary/20 rounded-lg px-4 py-3">
-            <span className="text-sm text-muted-foreground">Inventory value: </span>
-            <span className="text-lg font-bold text-primary">${locValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+          <div className="bg-primary/5 border border-primary/20 rounded-lg px-4 py-3 min-w-[280px]">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex-1 min-w-[150px]">
+                <span className="text-sm text-muted-foreground">{isHistoricalSnapshotDate ? 'End-of-day value: ' : 'Inventory value: '}</span>
+                <span className="text-lg font-bold text-primary">{snapshotLoading ? 'Loading...' : locValueLabel}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-muted-foreground" />
+                <Input
+                  type="date"
+                  className="h-8 w-36 text-xs bg-background"
+                  value={snapshotDate}
+                  onChange={e => setSnapshotDate(e.target.value)}
+                  aria-label="Inventory value date"
+                  max={todayDate}
+                />
+                {hasSnapshotDate && (
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSnapshotDate('')} aria-label="Show live inventory value">
+                    <X className="w-4 h-4" />
+                  </Button>
+                )}
+              </div>
+            </div>
+            {hasSnapshotDate && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {isTodaySnapshotDate
+                  ? 'Today uses current live inventory.'
+                  : hasSnapshotRows
+                  ? `Saved snapshot for ${snapshotDate}`
+                  : snapshotLoading ? 'Checking saved snapshot...' : `No saved snapshot for ${snapshotDate}`}
+              </p>
+            )}
           </div>
 
           {/* Storage areas */}
