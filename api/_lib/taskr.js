@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
 
 export const ENTITY_TABLES = {
@@ -71,7 +72,241 @@ export const IMPORT_ORDER = [
   ['pendingInvites', 'pending_invites'],
 ];
 
+export const IMPORTABLE_COLUMNS = {
+  companies: [
+    'name',
+    'admin_email',
+    'stripe_customer_id',
+    'stripe_subscription_id',
+    'subscription_tier',
+    'trial_start_date',
+    'trial_end_date',
+    'discount_coupon',
+    'discount_expires_at',
+    'is_active',
+  ],
+  locations: ['company_id', 'name', 'address', 'is_active'],
+  brand_settings: [
+    'business_name',
+    'logo_url',
+    'company_id',
+    'primary_color',
+    'secondary_color',
+  ],
+  subscriptions: [
+    'company_id',
+    'tier',
+    'status',
+    'stripe_subscription_id',
+    'stripe_price_id',
+    'current_period_start',
+    'current_period_end',
+    'cancel_at_period_end',
+  ],
+  checklists: [
+    'name',
+    'company_id',
+    'location_id',
+    'shift_type',
+    'recommended_start_time',
+    'expected_duration_minutes',
+    'is_active',
+  ],
+  task_groups: ['checklist_id', 'company_id', 'name', 'sort_order'],
+  tasks: [
+    'checklist_id',
+    'company_id',
+    'group_id',
+    'title',
+    'description',
+    'task_type',
+    'sort_order',
+    'is_required',
+    'estimated_minutes',
+    'parent_task_id',
+    'scheduled_days',
+    'due_time',
+    'kb_article_ids',
+  ],
+  checklist_instances: [
+    'checklist_id',
+    'company_id',
+    'location_id',
+    'date',
+    'shift_type',
+    'status',
+    'started_at',
+    'started_by',
+    'started_by_name',
+    'completed_at',
+    'completed_by',
+    'flagged_reason',
+    'active_users',
+    'completion_notes',
+  ],
+  task_completions: [
+    'instance_id',
+    'task_id',
+    'company_id',
+    'completed_by_email',
+    'completed_by_name',
+    'completed_at',
+    'value',
+    'notes',
+    'is_flag',
+  ],
+  cash_deposit_receipts: [
+    'instance_id',
+    'task_id',
+    'company_id',
+    'location_id',
+    'date',
+    'initials',
+    'expected_amount',
+    'actual_amount',
+    'deposit_amount',
+    'over_short',
+    'bills',
+    'coins',
+    'rolled_coins',
+    'notes',
+    'completed_by_email',
+    'completed_by_name',
+  ],
+  kb_folders: [
+    'name',
+    'company_id',
+    'location_id',
+    'sort_order',
+    'authorized_emails',
+  ],
+  kb_articles: [
+    'title',
+    'content',
+    'folder_id',
+    'company_id',
+    'location_id',
+    'media_urls',
+    'file_urls',
+    'author_name',
+    'author_email',
+    'is_draft',
+  ],
+  forum_boards: [
+    'name',
+    'company_id',
+    'description',
+    'location_id',
+    'authorized_emails',
+    'created_by_email',
+  ],
+  forum_posts: [
+    'title',
+    'content',
+    'company_id',
+    'location_id',
+    'board_id',
+    'author_name',
+    'author_email',
+    'is_announcement',
+    'is_pinned',
+    'kb_article_ids',
+  ],
+  forum_comments: ['post_id', 'company_id', 'content', 'author_name', 'author_email'],
+  chat_channels: [
+    'name',
+    'company_id',
+    'description',
+    'location_id',
+    'authorized_emails',
+    'created_by_email',
+  ],
+  equipment: [
+    'name',
+    'company_id',
+    'location_id',
+    'category',
+    'model',
+    'serial_number',
+    'purchase_date',
+    'last_service_date',
+    'next_service_date',
+    'service_interval_days',
+    'notes',
+    'is_active',
+  ],
+  service_schedules: [
+    'equipment_id',
+    'company_id',
+    'location_id',
+    'service_type',
+    'interval_days',
+    'last_scheduled_date',
+    'next_due_date',
+    'is_active',
+    'notes',
+  ],
+  service_records: [
+    'equipment_id',
+    'company_id',
+    'location_id',
+    'service_date',
+    'service_type',
+    'performed_by',
+    'cost',
+    'description',
+    'next_service_date',
+    'logged_by_email',
+    'logged_by_name',
+  ],
+  pending_invites: [
+    'email',
+    'name',
+    'role',
+    'assigned_locations',
+    'company_id',
+    'invited_by',
+  ],
+};
+
+let localEnvLoaded = false;
+
+function unquoteEnvValue(value) {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function loadLocalEnvFallback() {
+  if (localEnvLoaded) return;
+  localEnvLoaded = true;
+
+  try {
+    const envText = readFileSync('.env.local', 'utf8');
+    for (const line of envText.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      if (!match) continue;
+
+      const [, key, rawValue] = match;
+      if (!process.env[key]) {
+        process.env[key] = unquoteEnvValue(rawValue.trim());
+      }
+    }
+  } catch {
+    // Production and linked Vercel dev environments provide env vars directly.
+  }
+}
+
 export function serviceClient() {
+  loadLocalEnvFallback();
+
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -245,8 +480,17 @@ export function cleanRecord(record) {
   );
 }
 
-export function remapRecord(record, idMap) {
-  const cleaned = cleanRecord(record);
+function keepImportableColumns(record, table) {
+  const columns = IMPORTABLE_COLUMNS[table];
+  if (!columns) return record;
+
+  return Object.fromEntries(
+    Object.entries(record).filter(([key]) => columns.includes(key))
+  );
+}
+
+export function remapRecord(record, idMap, table) {
+  const cleaned = keepImportableColumns(cleanRecord(record), table);
 
   const fields = [
     ['company_id', 'companies'],
@@ -256,6 +500,7 @@ export function remapRecord(record, idMap) {
     ['parent_task_id', 'tasks'],
     ['folder_id', 'kbFolders'],
     ['equipment_id', 'equipment'],
+    ['board_id', 'forumBoards'],
     ['post_id', 'forumPosts'],
     ['task_id', 'tasks'],
     ['instance_id', 'checklistInstances'],

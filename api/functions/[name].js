@@ -563,7 +563,7 @@ async function handleFunction(name, req, client, user, body) {
           try {
             const { data: created, error } = await client
               .from(table)
-              .insert(remapRecord(row, idMap))
+              .insert(remapRecord(row, idMap, table))
               .select('*')
               .single();
             if (error) throw error;
