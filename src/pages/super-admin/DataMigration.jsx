@@ -89,20 +89,25 @@ export default function DataMigration() {
     setImportError(null);
     setConfirmClear(false);
 
-    const payload = pendingImportData?.data ? pendingImportData : { data: pendingImportData };
+    try {
+      const payload = pendingImportData?.data ? pendingImportData : { data: pendingImportData };
 
-    const res = await base44.functions.invoke('importAppData', {
-      data: payload.data,
-      options: { clearExisting: clear },
-    });
+      const res = await base44.functions.invoke('importAppData', {
+        data: payload.data,
+        options: { clearExisting: clear },
+      });
 
-    if (res.data?.success) {
-      setImportResult(res.data);
-      setPendingImportData(null);
-    } else {
-      setImportError(res.data?.error || "Import failed");
+      if (res.data?.success) {
+        setImportResult(res.data);
+        setPendingImportData(null);
+      } else {
+        setImportError(res.data?.error || "Import failed");
+      }
+    } catch (error) {
+      setImportError(error.message || "Import failed");
+    } finally {
+      setImporting(false);
     }
-    setImporting(false);
   };
 
   return (

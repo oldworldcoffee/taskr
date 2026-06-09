@@ -7,6 +7,7 @@ import { Camera, Flag, Check, ChevronDown, ChevronRight, AlertCircle, ThumbsUp, 
 import KBArticleModal from "@/components/kb/KBArticleModal";
 import { base44 } from "@/api/base44Client";
 import { format } from "date-fns";
+import { toast } from "sonner";
 import UserAvatar from "@/components/shared/UserAvatar";
 import CashDepositTask from "@/components/employee/CashDepositTask";
 import DescriptionWithLinks from "@/components/kb/DescriptionWithLinks";
@@ -62,9 +63,16 @@ export default function TaskItem({ task, completion, subtasks, subtaskCompletion
     const file = e.target.files?.[0];
     if (!file) return;
     setSubmitting(true);
-    const { file_url } = await base44.integrations.Core.UploadFile({ file });
-    await onComplete(task.id, file_url);
-    setSubmitting(false);
+    try {
+      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      await onComplete(task.id, file_url);
+      toast.success("Photo uploaded");
+    } catch (error) {
+      toast.error(error.message || "Photo upload failed. Please try again.");
+    } finally {
+      e.target.value = "";
+      setSubmitting(false);
+    }
   };
 
   const handleFlag = async () => {
