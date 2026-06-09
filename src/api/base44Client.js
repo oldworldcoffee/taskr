@@ -12,18 +12,49 @@ const ENTITY_TABLES = {
   ForumBoard: 'forum_boards',
   ForumComment: 'forum_comments',
   ForumPost: 'forum_posts',
+  CommissaryFulfillment: 'inventory_commissary_fulfillments',
+  InventoryCount: 'inventory_counts',
+  InventoryItem: 'inventory_items',
+  InventoryLocationSetting: 'inventory_location_settings',
+  InventorySnapshot: 'inventory_snapshots',
+  Invoice: 'inventory_invoices',
+  ItemStorageArea: 'inventory_item_storage_areas',
+  ItemVariant: 'inventory_item_variants',
   KBArticle: 'kb_articles',
   KBFolder: 'kb_folders',
   Location: 'locations',
+  LocationInventory: 'inventory_location_stock',
+  Order: 'inventory_orders',
   PendingInvite: 'pending_invites',
+  ProductGroup: 'inventory_product_groups',
   ServiceRecord: 'service_records',
   ServiceSchedule: 'service_schedules',
+  StorageArea: 'inventory_storage_areas',
   Subscription: 'subscriptions',
   Task: 'tasks',
   TaskCompletion: 'task_completions',
   TaskGroup: 'task_groups',
+  Transfer: 'inventory_transfers',
   User: 'users',
+  Vendor: 'inventory_vendors',
 };
+
+const COMPANY_SCOPED_ENTITIES = new Set([
+  'CommissaryFulfillment',
+  'InventoryCount',
+  'InventoryItem',
+  'InventoryLocationSetting',
+  'InventorySnapshot',
+  'Invoice',
+  'ItemStorageArea',
+  'ItemVariant',
+  'LocationInventory',
+  'Order',
+  'ProductGroup',
+  'StorageArea',
+  'Transfer',
+  'Vendor',
+]);
 
 const ARRAY_COLUMNS = new Set([
   'active_users',
@@ -139,9 +170,10 @@ function entityClient(entityName) {
     },
 
     async create(record) {
+      const payload = await withDefaultCompany(entityName, record);
       const { data, error } = await supabase
         .from(table)
-        .insert(sanitizeRecord(record))
+        .insert(payload)
         .select('*')
         .single();
       raise(error);
@@ -150,9 +182,10 @@ function entityClient(entityName) {
 
     async bulkCreate(records) {
       if (!records?.length) return [];
+      const payload = await Promise.all(records.map((record) => withDefaultCompany(entityName, record)));
       const { data, error } = await supabase
         .from(table)
-        .insert(records.map(sanitizeRecord))
+        .insert(payload)
         .select('*');
       raise(error);
       return data || [];
@@ -228,6 +261,23 @@ async function ensureProfile(authUser) {
     .single();
   raise(error);
   return profileFromAuthUser(authUser, data);
+}
+
+async function currentProfile() {
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+  raise(error);
+  if (!user) return null;
+  return ensureProfile(user);
+}
+
+async function withDefaultCompany(entityName, record = {}) {
+  const clean = sanitizeRecord(record);
+  if (!COMPANY_SCOPED_ENTITIES.has(entityName) || clean.company_id) return clean;
+  const profile = await currentProfile();
+  return profile?.company_id ? { ...clean, company_id: profile.company_id } : clean;
 }
 
 async function invokeFunction(name, payload = {}) {
@@ -419,6 +469,16 @@ export const base44 = {
 
         const { data } = supabase.storage.from(UPLOAD_BUCKET).getPublicUrl(path);
         return { file_url: data.publicUrl };
+      },
+
+      async InvokeLLM() {
+        return {
+          vendor_name: '',
+          invoice_number: '',
+          invoice_date: '',
+          total_amount: 0,
+          items: [],
+        };
       },
     },
   },

@@ -15,6 +15,12 @@ import {
   upsertPlatformSettings,
   withTrialStatus,
 } from '../_lib/taskr.js';
+import {
+  handleInventoryFunction,
+  handlePublicInventoryFunction,
+  isInventoryFunction,
+  isPublicInventoryFunction,
+} from '../_lib/inventory.js';
 
 const PRICE_ENV = {
   '1_location': 'STRIPE_PRICE_1_LOCATION',
@@ -148,6 +154,10 @@ async function createStripeCheckout(client, req, user, body) {
 }
 
 async function handleFunction(name, req, client, user, body) {
+  if (isInventoryFunction(name)) {
+    return handleInventoryFunction(name, req, client, user, body);
+  }
+
   switch (name) {
     case 'cleanupPendingInvite': {
       const email = (body.email || user.email || '').trim();
@@ -412,6 +422,9 @@ async function handleFunction(name, req, client, user, body) {
         patch.discount_expires_at = null;
       } else if (body.action === 'change_tier') {
         patch.subscription_tier = body.tier;
+      } else if (body.action === 'manage_features') {
+        const features = Array.isArray(body.enabledFeatures) ? body.enabledFeatures : [];
+        patch.enabled_features = [...new Set(features.filter((feature) => feature === 'inventory'))];
       }
       const { error } = await client.from('companies').update(patch).eq('id', body.companyId);
       if (error) throw error;
@@ -602,6 +615,10 @@ export default async function handler(req, res) {
     const name = Array.isArray(req.query.name) ? req.query.name[0] : req.query.name;
     const client = serviceClient();
     const body = await readJsonBody(req);
+    if (isPublicInventoryFunction(name)) {
+      const result = await handlePublicInventoryFunction(name, client, body || {});
+      return sendJson(res, 200, result);
+    }
     const { user } = await requireUser(req, client);
     const result = await handleFunction(name, req, client, user, body || {});
     return sendJson(res, 200, result);

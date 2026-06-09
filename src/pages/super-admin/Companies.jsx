@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Building2, Users, AlertCircle, MapPin, Calendar, Clock, Tag } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Plus, Building2, Users, AlertCircle, MapPin, Calendar, Clock, Tag, PackageCheck } from "lucide-react";
 import { differenceInDays, parseISO } from "date-fns";
 import { toast } from "sonner";
 
@@ -21,6 +22,7 @@ export default function SuperAdminCompanies() {
   const [extendDays, setExtendDays] = useState(15);
   const [couponCode, setCouponCode] = useState('');
   const [discountMonths, setDiscountMonths] = useState(3);
+  const [inventoryEnabled, setInventoryEnabled] = useState(false);
 
   const queryClient = useQueryClient();
 
@@ -84,6 +86,12 @@ export default function SuperAdminCompanies() {
         manageCompanyMutation.mutate({ companyId: selectedCompany.id, action: 'apply_discount', coupon: couponCode, discountMonths });
       } else if (manageAction === 'remove_discount') {
         manageCompanyMutation.mutate({ companyId: selectedCompany.id, action: 'remove_discount' });
+      } else if (manageAction === 'manage_features') {
+        manageCompanyMutation.mutate({
+          companyId: selectedCompany.id,
+          action: 'manage_features',
+          enabledFeatures: inventoryEnabled ? ['inventory'] : [],
+        });
       } else {
         manageCompanyMutation.mutate({ companyId: selectedCompany.id, action: 'change_tier', tier: upgradeTier });
       }
@@ -202,6 +210,12 @@ export default function SuperAdminCompanies() {
                   {company.discount_expires_at && <span className="text-muted-foreground">· expires {company.discount_expires_at}</span>}
                 </div>
               )}
+              {company.enabled_features?.includes('inventory') && (
+                <div className="flex items-center gap-1.5 text-xs text-blue-700">
+                  <PackageCheck className="h-3.5 w-3.5" />
+                  Inventory enabled
+                </div>
+              )}
               <p className="text-xs text-muted-foreground">{company.admin_email}</p>
               <div className="flex gap-2 pt-2">
                 <Button 
@@ -215,6 +229,7 @@ export default function SuperAdminCompanies() {
                     setExtendDays(15);
                     setCouponCode('');
                     setDiscountMonths(3);
+                    setInventoryEnabled(company.enabled_features?.includes('inventory') || false);
                     setManageOpen(true);
                   }}
                 >
@@ -245,6 +260,7 @@ export default function SuperAdminCompanies() {
                 <SelectContent>
                   <SelectItem value="extend_trial">Extend Trial</SelectItem>
                   <SelectItem value="change_tier">Change Tier Manually</SelectItem>
+                  <SelectItem value="manage_features">Manage Features</SelectItem>
                   <SelectItem value="apply_discount">Apply Discount (Stripe Coupon)</SelectItem>
                   <SelectItem value="remove_discount">Remove Discount</SelectItem>
                 </SelectContent>
@@ -308,6 +324,16 @@ export default function SuperAdminCompanies() {
                 {selectedCompany?.discount_coupon && (
                   <p className="text-xs text-orange-600">Current coupon: <strong>{selectedCompany.discount_coupon}</strong></p>
                 )}
+              </div>
+            )}
+
+            {manageAction === 'manage_features' && (
+              <div className="flex items-center justify-between rounded-md border border-border p-3">
+                <div>
+                  <Label>Inventory</Label>
+                  <p className="text-xs text-muted-foreground mt-1">Show the Inventory module for company admins and managers.</p>
+                </div>
+                <Switch checked={inventoryEnabled} onCheckedChange={setInventoryEnabled} />
               </div>
             )}
 

@@ -1,8 +1,20 @@
 import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
 import { base44 } from '@/api/base44Client';
 import { supabase } from '@/api/supabaseClient';
+import { enrichLocationsWithInventorySettings, isCommissaryLocation } from '@/lib/inventoryLocations';
 
 const AuthContext = createContext();
+
+async function loadCompanyLocations(companyId) {
+  if (!companyId) return [];
+
+  const [locations, settings] = await Promise.all([
+    base44.entities.Location.filter({ company_id: companyId }),
+    base44.entities.InventoryLocationSetting.filter({ company_id: companyId }).catch(() => []),
+  ]);
+
+  return enrichLocationsWithInventorySettings(locations, settings);
+}
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -12,6 +24,7 @@ export const AuthProvider = ({ children }) => {
   const [authError, setAuthError] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [appPublicSettings] = useState({ public_settings: {} });
+  const [allLocations, setAllLocations] = useState([]);
 
   const checkUserAuth = useCallback(async () => {
     setIsLoadingAuth(true);
@@ -32,6 +45,12 @@ export const AuthProvider = ({ children }) => {
             return;
           }
 
+          try {
+            const locations = await loadCompanyLocations(updatedUser.company_id);
+            setAllLocations(locations);
+          } catch {
+            setAllLocations([]);
+          }
           setUser(updatedUser);
           setIsAuthenticated(true);
           return;
@@ -42,11 +61,22 @@ export const AuthProvider = ({ children }) => {
         }
       }
 
+      if (currentUser.company_id) {
+        try {
+          const locations = await loadCompanyLocations(currentUser.company_id);
+          setAllLocations(locations);
+        } catch {
+          setAllLocations([]);
+        }
+      } else {
+        setAllLocations([]);
+      }
       setUser(currentUser);
       setIsAuthenticated(true);
     } catch (error) {
       if (error.status === 401) {
         setUser(null);
+        setAllLocations([]);
         setIsAuthenticated(false);
       } else {
         setAuthError({
@@ -80,6 +110,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = () => {
     setUser(null);
+    setAllLocations([]);
     setIsAuthenticated(false);
     base44.auth.logout();
   };
@@ -87,6 +118,41 @@ export const AuthProvider = ({ children }) => {
   const navigateToLogin = () => {
     base44.auth.redirectToLogin();
   };
+
+  const companyId = user?.company_id || null;
+  const assignedLocations = user?.assigned_locations || [];
+  const canAccessLocation = useCallback((locationId) => {
+    if (!locationId) return false;
+    if (['admin', 'super_admin'].includes(user?.role)) return true;
+    if (!assignedLocations.length) return true;
+    return assignedLocations.includes(locationId);
+  }, [assignedLocations, user?.role]);
+  const canAccessCommissary = useCallback(() => {
+    if (['admin', 'super_admin'].includes(user?.role)) return true;
+    const commissaryLocations = allLocations.filter(isCommissaryLocation);
+    if (!assignedLocations.length) return commissaryLocations.length > 0;
+    return commissaryLocations.some((location) => assignedLocations.includes(location.id));
+  }, [allLocations, assignedLocations, user?.role]);
+  const getManagedCommissaryLocationIds = useCallback(() => {
+    const commissaryLocations = allLocations.filter(isCommissaryLocation);
+    if (['admin', 'super_admin'].includes(user?.role) || !assignedLocations.length) {
+      return commissaryLocations.map((location) => location.id);
+    }
+    return commissaryLocations
+      .filter((location) => assignedLocations.includes(location.id))
+      .map((location) => location.id);
+  }, [allLocations, assignedLocations, user?.role]);
+  const userPermission = user
+    ? {
+        role: user.role,
+        permissions: {
+          master_catalog: ['admin', 'manager'].includes(user.role),
+          hq_reports: ['admin', 'manager'].includes(user.role),
+          all_locations: ['admin', 'super_admin'].includes(user.role) || assignedLocations.length === 0,
+          location_ids: assignedLocations,
+        },
+      }
+    : null;
 
   return (
     <AuthContext.Provider value={{
@@ -100,7 +166,13 @@ export const AuthProvider = ({ children }) => {
       logout,
       navigateToLogin,
       checkUserAuth,
-      checkAppState
+      checkAppState,
+      allLocations,
+      companyId,
+      canAccessLocation,
+      canAccessCommissary,
+      getManagedCommissaryLocationIds,
+      userPermission
     }}>
       {children}
     </AuthContext.Provider>
