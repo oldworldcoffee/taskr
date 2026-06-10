@@ -84,7 +84,7 @@ export default function Register() {
         )}
         <div className="flex justify-center mb-6">
           <InputOTP
-            maxLength={6}
+            maxLength={8}
             value={otpCode}
             onChange={setOtpCode}
             autoFocus
@@ -97,13 +97,15 @@ export default function Register() {
               <InputOTPSlot index={3} />
               <InputOTPSlot index={4} />
               <InputOTPSlot index={5} />
+              <InputOTPSlot index={6} />
+              <InputOTPSlot index={7} />
             </InputOTPGroup>
           </InputOTP>
         </div>
         <Button
           className="w-full h-12 font-medium"
           onClick={handleVerify}
-          disabled={loading || otpCode.length < 6}
+          disabled={loading || otpCode.length < 6 || otpCode.length > 8}
         >
           {loading ? (
             <>

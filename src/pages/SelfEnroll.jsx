@@ -300,9 +300,9 @@ export default function SelfEnroll() {
                   id="otp"
                   value={otpCode}
                   onChange={(e) => setOtpCode(e.target.value)}
-                  placeholder="123456"
+                  placeholder="12345678"
                   required
-                  maxLength={6}
+                  maxLength={8}
                 />
               </div>
 
