@@ -535,15 +535,38 @@ async function handleFunction(name, req, client, user, body) {
 
     case 'getSuperAdminStats': {
       requireSuperAdmin(user);
-      const [companies, users, locations] = await Promise.all([
+      const today = new Date().toISOString().slice(0, 10);
+      const [companies, users, locations, activeSubscriptions, activeTrials, expiredTrials] = await Promise.all([
         client.from('companies').select('id', { count: 'exact', head: true }),
         client.from('users').select('id', { count: 'exact', head: true }),
         client.from('locations').select('id', { count: 'exact', head: true }),
+        client
+          .from('companies')
+          .select('id', { count: 'exact', head: true })
+          .eq('is_active', true)
+          .neq('subscription_tier', 'trial'),
+        client
+          .from('companies')
+          .select('id', { count: 'exact', head: true })
+          .eq('is_active', true)
+          .eq('subscription_tier', 'trial')
+          .gte('trial_end_date', today),
+        client
+          .from('companies')
+          .select('id', { count: 'exact', head: true })
+          .eq('subscription_tier', 'trial')
+          .lt('trial_end_date', today),
       ]);
       return {
         companies: companies.count || 0,
         users: users.count || 0,
         locations: locations.count || 0,
+        total_companies: companies.count || 0,
+        total_users: users.count || 0,
+        total_locations: locations.count || 0,
+        active_subscriptions: activeSubscriptions.count || 0,
+        active_trials: activeTrials.count || 0,
+        expired_trials: expiredTrials.count || 0,
       };
     }
 

@@ -9,7 +9,8 @@ Taskr is a Vite React app migrated from Base44 to Vercel and Supabase.
    npm install
    ```
 2. Copy `.env.example` to `.env.local` and fill in your Supabase values.
-   Add `OPENAI_API_KEY` to enable scanned invoice image parsing. Without it, invoice uploads still open manual review.
+   Add `OPENAI_API_KEY` to enable scanned invoice parsing, AI order review, and smart par calculations. Without it, inventory AI helpers use built-in fallback logic where available.
+   `OPENAI_INVENTORY_MODEL` controls inventory AI by default; `OPENAI_ORDERING_MODEL` and `OPENAI_PARS_MODEL` can override the order review and smart par models separately.
 3. Apply the SQL in `supabase/migrations/20260608130000_initial_taskr_schema.sql` to your Supabase project.
 4. Run the app:
    ```bash

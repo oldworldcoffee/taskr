@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Building2, Users, CheckCircle2, AlertCircle, TrendingUp } from "lucide-react";
 
 export default function SuperAdminOverview() {
-  const { data: stats, isLoading } = useQuery({
+  const { data: stats, isLoading, error } = useQuery({
     queryKey: ['super-admin-stats'],
     queryFn: async () => {
       const res = await base44.functions.invoke('getSuperAdminStats', {});
@@ -14,6 +14,26 @@ export default function SuperAdminOverview() {
 
   if (isLoading) {
     return <div className="flex items-center justify-center h-64"><div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" /></div>;
+  }
+
+  if (error) {
+    return (
+      <div>
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold">Platform Overview</h1>
+          <p className="text-muted-foreground">Key metrics and statistics</p>
+        </div>
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="flex items-start gap-3 p-6 text-red-800">
+            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+            <div>
+              <h3 className="font-semibold">Could not load dashboard stats</h3>
+              <p className="mt-1 text-sm">{error.message}</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   const statCards = [

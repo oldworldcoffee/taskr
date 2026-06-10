@@ -15,11 +15,11 @@ export default function SuperAdminUsers() {
 
   const queryClient = useQueryClient();
 
-  const { data: superUsers, isLoading } = useQuery({
+  const { data: superUsers = [], isLoading, error } = useQuery({
     queryKey: ['super-users'],
     queryFn: async () => {
       const res = await base44.functions.invoke('getSuperUsers', {});
-      return res.data.users;
+      return res.data.users || [];
     }
   });
 
@@ -68,6 +68,26 @@ export default function SuperAdminUsers() {
 
   if (isLoading) {
     return <div className="flex items-center justify-center h-64"><div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" /></div>;
+  }
+
+  if (error) {
+    return (
+      <div>
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold">Super Users</h1>
+          <p className="text-muted-foreground">Manage super admin access</p>
+        </div>
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="flex items-start gap-3 p-6 text-red-800">
+            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+            <div>
+              <h3 className="font-semibold">Could not load super users</h3>
+              <p className="mt-1 text-sm">{error.message}</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (
@@ -130,7 +150,7 @@ export default function SuperAdminUsers() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        {superUsers?.map((user) => (
+        {superUsers.map((user) => (
           <Card key={user.id}>
             <CardHeader className="flex flex-row items-center justify-between">
               <div className="flex items-center gap-3">
@@ -161,7 +181,7 @@ export default function SuperAdminUsers() {
         ))}
       </div>
 
-      {superUsers?.length === 0 && (
+      {superUsers.length === 0 && (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
             <Shield className="h-12 w-12 text-muted-foreground mb-4" />

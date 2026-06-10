@@ -90,6 +90,12 @@ export default function SmartFillDialog({ open, onOpenChange, locationId, onConf
                 </div>
               </div>
 
+              {results.warning && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  <p className="text-xs text-amber-800">{results.warning}</p>
+                </div>
+              )}
+
               {noHistoryCount > 0 && (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
                   <p className="text-xs text-amber-800">

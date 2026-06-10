@@ -56,7 +56,7 @@ export default function OperationsHome() {
   const { user } = useAuth();
   const { unreadChat, unreadForum } = useUnreadCounts();
   const today = format(new Date(), "yyyy-MM-dd");
-  const canManage = ["admin", "manager"].includes(user?.role);
+  const canManage = ["admin", "manager", "super_admin"].includes(user?.role);
 
   const { data: company } = useQuery({
     queryKey: ["company-info"],

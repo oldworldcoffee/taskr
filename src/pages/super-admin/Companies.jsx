@@ -26,11 +26,11 @@ export default function SuperAdminCompanies() {
 
   const queryClient = useQueryClient();
 
-  const { data: companies, isLoading } = useQuery({
+  const { data: companies = [], isLoading, error } = useQuery({
     queryKey: ['companies'],
     queryFn: async () => {
       const res = await base44.functions.invoke('getAllCompanies', {});
-      return res.data.companies;
+      return res.data.companies || [];
     }
   });
 
@@ -118,6 +118,26 @@ export default function SuperAdminCompanies() {
     return <div className="flex items-center justify-center h-64"><div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" /></div>;
   }
 
+  if (error) {
+    return (
+      <div>
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold">Companies</h1>
+          <p className="text-muted-foreground">Manage all companies and subscriptions</p>
+        </div>
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="flex items-start gap-3 p-6 text-red-800">
+            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+            <div>
+              <h3 className="font-semibold">Could not load companies</h3>
+              <p className="mt-1 text-sm">{error.message}</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div>
       <div className="flex justify-between items-center mb-8">
@@ -165,7 +185,17 @@ export default function SuperAdminCompanies() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {companies?.map((company) => (
+        {companies.length === 0 ? (
+          <Card className="md:col-span-2 lg:col-span-3">
+            <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+              <Building2 className="mb-4 h-12 w-12 text-muted-foreground" />
+              <h3 className="mb-2 text-lg font-semibold">No companies found</h3>
+              <p className="text-sm text-muted-foreground">
+                The data call completed, but it returned zero companies.
+              </p>
+            </CardContent>
+          </Card>
+        ) : companies.map((company) => (
           <Card key={company.id}>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
