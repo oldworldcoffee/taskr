@@ -93,22 +93,14 @@ export default function LocationStock() {
     };
   }, [selectedLoc, snapshotDate, isTodaySnapshotDate]);
 
-  // Reload data when page gains focus or becomes visible (e.g., after returning from Inventory Counts)
+  // Refresh only when the app explicitly reports an inventory update.
   useEffect(() => {
-    const handleFocus = () => load();
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') load();
-    };
     const handleInventoryUpdate = () => {
       console.log('Inventory updated event received, reloading...');
       load();
     };
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibility);
     window.addEventListener('inventory-updated', handleInventoryUpdate);
     return () => {
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibility);
       window.removeEventListener('inventory-updated', handleInventoryUpdate);
     };
   }, []);

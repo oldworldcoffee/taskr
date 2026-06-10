@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ChevronUp, ChevronDown } from 'lucide-react';
 
 const EMPTY = { name: '', sku: '', category: '', unit_of_measure: '', unit_cost: '', is_commissary_item: false, commissary_price: '', description: '', vendor_id: '', is_active: true, purchase_options: [], product_group_id: null, group_sort_order: 0 };
+const ITEM_DRAFT_KEY = 'taskr.inventory.catalog.itemDraft';
 
 const UOM_TO_BASE = {
   'fl-oz': { family: 'volume', toBase: 1 },
@@ -71,6 +72,7 @@ export default function MasterCatalog() {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [expandedGroups, setExpandedGroups] = useState(new Set());
   const fileInputRef = useRef(null);
+  const restoredDraftRef = useRef(false);
 
   const load = async () => {
     try {
@@ -105,6 +107,29 @@ export default function MasterCatalog() {
   };
 
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    if (loading || restoredDraftRef.current || dialog) return;
+    restoredDraftRef.current = true;
+
+    try {
+      const rawDraft = window.localStorage.getItem(ITEM_DRAFT_KEY);
+      if (!rawDraft) return;
+
+      const draft = JSON.parse(rawDraft);
+      const isExpired = Date.now() - Number(draft.updatedAt || 0) > 1000 * 60 * 60 * 24 * 7;
+      if (isExpired || !draft.form) {
+        window.localStorage.removeItem(ITEM_DRAFT_KEY);
+        return;
+      }
+
+      setForm({ ...EMPTY, ...draft.form, purchase_options: draft.form.purchase_options || [] });
+      setDialog(true);
+      toast.info('Restored your unsaved catalog item draft.');
+    } catch {
+      window.localStorage.removeItem(ITEM_DRAFT_KEY);
+    }
+  }, [loading, dialog]);
 
   const openNew = () => { setForm(EMPTY); setDialog(true); };
   const openEdit = (item) => { setForm({ ...item, purchase_options: item.purchase_options || [] }); setDialog(true); };
@@ -165,8 +190,10 @@ export default function MasterCatalog() {
       if (freshItem) setForm({ ...freshItem, purchase_options: freshItem.purchase_options || [] });
       setDialog(false);
       toast.success('Item saved!');
+      return true;
     } catch (err) {
       toast.error('Save failed: ' + err.message);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -747,6 +774,7 @@ export default function MasterCatalog() {
         vendors={vendors}
         locations={locations}
         categories={categories}
+        draftKey={ITEM_DRAFT_KEY}
       />
 
       <Dialog open={mergeDialogOpen} onOpenChange={setMergeDialogOpen}>
