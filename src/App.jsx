@@ -57,6 +57,17 @@ import InventoryReports from "@/pages/inventory/Reports.jsx";
 import InventoryRecipesPricing from "@/pages/inventory/RecipesPricing";
 import InventorySettings from "@/pages/inventory/Settings";
 import VendorOrderView from "@/pages/inventory/VendorOrderView";
+import RoasteryLayout from "@/components/roastery/RoasteryLayout";
+import RoasteryDashboard from "@/pages/roastery/Dashboard";
+import RoasteryInventory from "@/pages/roastery/Inventory";
+import RoasteryCoffeeLibrary from "@/pages/roastery/CoffeeLibrary";
+import RoasteryWarehouses from "@/pages/roastery/Warehouses";
+import RoasteryReleaseSchedule from "@/pages/roastery/ReleaseSchedule";
+import RoasteryPricingCalculator from "@/pages/roastery/PricingCalculator";
+import RoasteryInvoices from "@/pages/roastery/Invoices";
+import RoasteryReports from "@/pages/roastery/Reports";
+import RoasterySettings from "@/pages/roastery/Settings";
+import RoasteryDataTools from "@/pages/roastery/DataTools";
 
 import SuperAdminLayout from "@/components/layout/SuperAdminLayout";
 import SuperAdminOverview from "@/pages/super-admin/Overview";
