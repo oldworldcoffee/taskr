@@ -36,8 +36,19 @@ function localApiFunctionsPlugin() {
 
         req.query = { name }
         console.info(`[taskr] ${req.method || 'GET'} /api/functions/${req.query.name}`)
-        const { default: handler } = await import(`${apiFunctionUrl}?t=${Date.now()}`)
-        await handler(req, res)
+        try {
+          const { default: handler } = await import(`${apiFunctionUrl}?t=${Date.now()}`)
+          await handler(req, res)
+        } catch (error) {
+          console.error(`[taskr] local API function ${name} failed`, error)
+          if (!res.headersSent) {
+            res.statusCode = error.status || 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: error.message || 'Local API function failed' }))
+          } else {
+            res.end()
+          }
+        }
       })
     },
   }

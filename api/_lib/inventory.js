@@ -193,27 +193,242 @@ function normalizeMatchText(value) {
     .trim();
 }
 
+function normalizeCode(value) {
+  return normalizeMatchText(value).replace(/\s+/g, '');
+}
+
+const VENDOR_ENTITY_WORDS = new Set([
+  'the',
+  'inc',
+  'incorporated',
+  'llc',
+  'ltd',
+  'limited',
+  'corp',
+  'corporation',
+  'company',
+  'co',
+  'llp',
+  'lp',
+]);
+
+function normalizeVendorText(value) {
+  return normalizeMatchText(value)
+    .split(' ')
+    .filter((word) => word && !VENDOR_ENTITY_WORDS.has(word))
+    .join(' ');
+}
+
+function vendorNameValues(vendor = {}) {
+  const aliases = Array.isArray(vendor.aliases) ? vendor.aliases : [];
+  return [
+    vendor.name,
+    vendor.legal_name,
+    vendor.display_name,
+    vendor.dba,
+    vendor.dba_name,
+    ...aliases,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function vendorMatchScore(candidate, vendorName) {
+  const candidateText = normalizeVendorText(candidate);
+  const vendorText = normalizeVendorText(vendorName);
+  if (!candidateText || !vendorText) return 0;
+  if (candidateText === vendorText) return 100;
+
+  const shorterLength = Math.min(candidateText.length, vendorText.length);
+  if (shorterLength >= 6 && (candidateText.includes(vendorText) || vendorText.includes(candidateText))) {
+    return 94;
+  }
+
+  const candidateWords = new Set(candidateText.split(' ').filter((word) => word.length > 1));
+  const vendorWords = vendorText.split(' ').filter((word) => word.length > 1);
+  if (!candidateWords.size || !vendorWords.length) return 0;
+
+  const shared = vendorWords.filter((word) => candidateWords.has(word));
+  const vendorCoverage = shared.length / vendorWords.length;
+  const candidateCoverage = shared.length / candidateWords.size;
+  if (shared.length >= 2 && vendorCoverage >= 0.67 && candidateCoverage >= 0.4) {
+    return 82 + Math.round(Math.min(vendorCoverage, candidateCoverage) * 10);
+  }
+
+  return 0;
+}
+
+function findKnownVendor(candidate, vendors = []) {
+  const candidateText = String(candidate || '').trim();
+  if (!candidateText) return null;
+
+  let best = null;
+  for (const vendor of vendors) {
+    if (vendor.is_active === false) continue;
+    for (const name of vendorNameValues(vendor)) {
+      const score = vendorMatchScore(candidateText, name);
+      if (score > (best?.score || 0)) {
+        best = { vendor, name: vendor.name || name, score };
+      }
+    }
+  }
+
+  return best?.score >= 82 ? best : null;
+}
+
+function invoiceVendorCandidateValues(parsed = {}) {
+  return [
+    parsed.supplier_name,
+    parsed.seller_name,
+    parsed.remit_to_name,
+    parsed.remit_to_company,
+    parsed.from_name,
+    parsed.from_company,
+    parsed.header_name,
+    parsed.header_vendor_name,
+    parsed.logo_name,
+    parsed.invoice_from,
+    parsed.vendor_name,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function vendorFromMatchedPurchaseOptions(items = [], vendors = []) {
+  const scores = new Map();
+  for (const item of items) {
+    if (!item.purchase_option_matched) continue;
+    const rawName = String(item.purchase_option_vendor_name || '').trim();
+    if (!rawName) continue;
+
+    const known = findKnownVendor(rawName, vendors);
+    const name = known?.vendor?.name || rawName;
+    const key = normalizeVendorText(name);
+    if (!key) continue;
+
+    const current = scores.get(key) || { name, vendor: known?.vendor || null, score: 0 };
+    current.score += 1 + Math.min(Number(item.match_score || 0), 100) / 100;
+    scores.set(key, current);
+  }
+
+  return [...scores.values()].sort((a, b) => b.score - a.score)[0] || null;
+}
+
+function resolveInvoiceVendorName(parsed = {}, vendors = [], items = []) {
+  const optionVendor = vendorFromMatchedPurchaseOptions(items, vendors);
+  if (optionVendor?.name) return optionVendor.name;
+
+  const known = invoiceVendorCandidateValues(parsed)
+    .map((candidate) => findKnownVendor(candidate, vendors))
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)[0];
+  if (known?.vendor?.name) return known.vendor.name;
+
+  return String(parsed.vendor_name || '').trim();
+}
+
+function compactPromptObject(value = {}) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => {
+      if (entry === undefined || entry === null || entry === '') return false;
+      if (Array.isArray(entry) && entry.length === 0) return false;
+      return true;
+    })
+  );
+}
+
+function compactInvoicePromptCatalog(catalogItems = [], maxChars = 35000) {
+  const promptItems = [];
+  let approxChars = 2;
+
+  for (const item of catalogItems) {
+    const options = [];
+    for (const option of item.purchase_options || []) {
+      const code = option.product_code
+        || option.vendor_sku
+        || option.item_code
+        || option.vendor_item_number
+        || option.supplier_item_number
+        || option.supplier_sku
+        || option.catalog_number
+        || option.sku
+        || option.upc
+        || '';
+      const optionRow = compactPromptObject({
+        vendor: option.vendor_name,
+        product: option.product_name,
+        code,
+      });
+      if (Object.keys(optionRow).length) options.push(optionRow);
+      if (options.length >= 3) break;
+    }
+
+    const row = compactPromptObject({
+      id: item.id,
+      name: item.name,
+      sku: item.sku,
+      uom: item.unit_of_measure,
+      options,
+    });
+    const serialized = JSON.stringify(row);
+    if (promptItems.length && approxChars + serialized.length > maxChars) break;
+    promptItems.push(row);
+    approxChars += serialized.length + 1;
+  }
+
+  return promptItems;
+}
+
 function meaningfulWords(value) {
   const stop = new Set(['the', 'and', 'with', 'blend', 'barista', 'califia', 'case', 'cs', 'pl', 'plt', 'milk']);
   return normalizeMatchText(value).split(' ').filter((word) => word.length > 1 && !stop.has(word));
 }
 
-function candidateInvoiceCodes(extracted) {
+function invoiceCodeValues(source = {}) {
   return [
-    extracted.vendor_sku,
-    extracted.vendor_item_number,
-    extracted.item_number,
-    extracted.product_code,
-    extracted.sku,
-  ].map(normalizeMatchText).filter(Boolean);
+    source.vendor_sku,
+    source.vendor_item_number,
+    source.vendor_item_no,
+    source.item_number,
+    source.item_no,
+    source.item_num,
+    source.item_code,
+    source.product_code,
+    source.product_number,
+    source.product_no,
+    source.supplier_item_number,
+    source.supplier_item_no,
+    source.supplier_sku,
+    source.vendor_code,
+    source.catalog_number,
+    source.catalog_no,
+    source.code,
+    source.sku,
+    source.upc,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function candidateInvoiceCodes(extracted) {
+  return invoiceCodeValues(extracted).map(normalizeCode).filter(Boolean);
 }
 
 function optionCodes(option = {}) {
   return [
     option.product_code,
     option.vendor_sku,
+    option.vendor_item_number,
+    option.vendor_item_no,
+    option.item_number,
+    option.item_no,
+    option.item_code,
+    option.product_number,
+    option.product_no,
+    option.supplier_item_number,
+    option.supplier_item_no,
+    option.supplier_sku,
+    option.vendor_code,
+    option.catalog_number,
+    option.catalog_no,
+    option.code,
     option.sku,
-  ].map(normalizeMatchText).filter(Boolean);
+    option.upc,
+  ].map(normalizeCode).filter(Boolean);
 }
 
 function optionNames(option = {}) {
@@ -231,17 +446,17 @@ function purchaseOptionMatch(extracted, catalogItems = []) {
     for (const option of item.purchase_options || []) {
       const exactCodeMatch = codes.length > 0 && optionCodes(option).some((code) => codes.includes(code));
       if (exactCodeMatch) {
-        return { item, score: 100, reason: 'purchase_option_code' };
+        return { item, option, score: 100, reason: 'purchase_option_code' };
       }
       if (codes.length > 0) continue;
 
       if (invoiceName) {
         for (const optionName of optionNames(option)) {
           if (!optionName) continue;
-          if (optionName === invoiceName) return { item, score: 96, reason: 'purchase_option_name' };
+          if (optionName === invoiceName) return { item, option, score: 96, reason: 'purchase_option_name' };
           if (invoiceName.includes(optionName) || optionName.includes(invoiceName)) {
             const sharedLength = Math.min(invoiceName.length, optionName.length);
-            if (sharedLength >= 8) return { item, score: 90, reason: 'purchase_option_name' };
+            if (sharedLength >= 8) return { item, option, score: 90, reason: 'purchase_option_name' };
           }
         }
       }
@@ -295,6 +510,8 @@ function matchCatalogItem(extracted, catalogItems = []) {
         match_type: existingPurchaseOption ? existingPurchaseOption.reason : 'catalog_item',
         purchase_option_matched: Boolean(existingPurchaseOption),
         purchase_option_missing: !existingPurchaseOption,
+        purchase_option_vendor_id: existingPurchaseOption?.option?.vendor_id || null,
+        purchase_option_vendor_name: existingPurchaseOption?.option?.vendor_name || '',
         match_score: existingPurchaseOption?.score || 90,
       };
     }
@@ -307,6 +524,8 @@ function matchCatalogItem(extracted, catalogItems = []) {
       match_type: purchaseMatch.reason,
       purchase_option_matched: true,
       purchase_option_missing: false,
+      purchase_option_vendor_id: purchaseMatch.option?.vendor_id || null,
+      purchase_option_vendor_name: purchaseMatch.option?.vendor_name || '',
       match_score: purchaseMatch.score,
     };
   }
@@ -318,6 +537,8 @@ function matchCatalogItem(extracted, catalogItems = []) {
     match_type: itemMatch.reason,
     purchase_option_matched: false,
     purchase_option_missing: true,
+    purchase_option_vendor_id: null,
+    purchase_option_vendor_name: '',
     match_score: itemMatch.score,
   };
 }
@@ -338,12 +559,14 @@ function normalizeExtractedItems(rawItems = [], catalogItems = []) {
       return {
         item_name: itemName,
         item_id: itemId,
-        vendor_sku: String(item.vendor_sku || item.vendor_item_number || item.item_number || item.product_code || item.sku || '').trim(),
+        vendor_sku: invoiceCodeValues(item)[0] || '',
         pack_size: String(item.pack_size || item.pack || '').trim(),
         match_type: match?.match_type || null,
         match_score: match?.match_score || 0,
         purchase_option_matched: match?.purchase_option_matched === true,
         purchase_option_missing: match?.purchase_option_missing === true,
+        purchase_option_vendor_id: match?.purchase_option_vendor_id || null,
+        purchase_option_vendor_name: match?.purchase_option_vendor_name || '',
         quantity,
         unit_cost: unitCost,
         unit_of_measure: unitOfMeasure,
@@ -1247,14 +1470,26 @@ async function extractInvoiceImage(client, user, body) {
       sku: item.sku || '',
       category: item.category || '',
       unit_of_measure: item.unit_of_measure || '',
-      purchase_options: (item.purchase_options || []).slice(0, 4).map((option) => ({
+      purchase_options: (item.purchase_options || []).map((option) => ({
+        vendor_id: option.vendor_id || '',
         vendor_name: option.vendor_name || '',
         product_name: option.product_name || '',
         product_code: option.product_code || option.vendor_sku || '',
+        vendor_sku: option.vendor_sku || option.product_code || '',
+        item_code: option.item_code || option.vendor_item_number || option.supplier_item_number || '',
+        vendor_item_number: option.vendor_item_number || '',
+        product_number: option.product_number || '',
+        supplier_item_number: option.supplier_item_number || '',
+        supplier_sku: option.supplier_sku || '',
+        vendor_code: option.vendor_code || '',
+        catalog_number: option.catalog_number || '',
+        sku: option.sku || '',
+        upc: option.upc || '',
         unit_of_measure: option.unit_of_measure || '',
       })),
     }))
     .slice(0, 600);
+  const promptCatalogItems = compactInvoicePromptCatalog(activeCatalogItems);
   const activeVendorNames = vendors
     .filter((vendor) => vendor.is_active !== false)
     .map((vendor) => String(vendor.name || '').trim())
@@ -1278,17 +1513,20 @@ async function extractInvoiceImage(client, user, body) {
           role: 'system',
           content: [
             'You extract structured data from food, beverage, retail, and supplier invoices.',
-            'Return JSON only with vendor_name, invoice_number, invoice_date, subtotal_amount, tax_amount, freight_amount, total_amount, and items.',
+            'Return JSON only with vendor_name, supplier_name, seller_name, remit_to_name, bill_to_name, ship_to_name, customer_name, invoice_number, invoice_date, subtotal_amount, tax_amount, freight_amount, total_amount, and items.',
             'vendor_name means the company issuing the invoice: the supplier/seller/remit-to company, usually shown in the logo/header, "from", "remit to", "mail payments to", or seller area.',
+            'bill_to_name, ship_to_name, sold_to_name, customer_name, customer number, customer PO, delivery address, and buyer account names identify the buyer/recipient, not the vendor.',
             'Never use bill-to, sold-to, ship-to, customer, customer number, customer PO, delivery address, or buyer account names as vendor_name.',
             'If an invoice has both a supplier header and sold-to/bill-to/customer block, choose the supplier header/remit-to company.',
-            'For Chefs Warehouse / Greenleaf invoices, vendor_name should be Chefs Warehouse or The Chefs Warehouse West Coast LLC, not the Old World Coffee customer name.',
+            'If a known vendor appears in the supplier/header/remit-to area, vendor_name must be the exact known vendor name from the provided list.',
+            'For Chefs Warehouse / Greenleaf invoices, vendor_name should be Chefs Warehouse or The Chefs Warehouse West Coast LLC, not the Old World Coffee or Old World Coffee Roasters customer name.',
             'Extract every product/service row in the invoice line-item table. Do not omit rows just because there is no catalog match.',
-            'For items, return item_name, vendor_sku, pack_size, quantity, unit_cost, unit_of_measure, total_cost, item_id, and matched.',
+            'For items, return item_name, vendor_sku, item_code, vendor_item_number, product_code, pack_size, quantity, unit_cost, unit_of_measure, total_cost, item_id, and matched.',
+            'Put any printed item/catalog/product/SKU/supplier code into vendor_sku when possible, even if the invoice labels it item code, product code, catalog number, or vendor item number.',
             'pack_size must be the exact printed pack-size line when present, such as "12/32 OZ CS" or "160/2 OZ CS"; do not rewrite or summarize it.',
             'A pack size like "160/2 OZ CS" means 160 individual pieces per case, each piece is 2 oz. Do not treat that as 160 oz or 2 cases.',
             'A pack size like "12/32 OZ CS" means 12 inner units per case, each inner unit is 32 oz.',
-            'Match by existing purchase option product_code/vendor SKU first.',
+            'Match by existing purchase option product_code/vendor SKU/item code first.',
             'If no purchase option matches, match by inventory item name or close product-name overlap and still return that item_id.',
             'For example, vendor text like OAT MILK BARISTA BLEND should match an Oat Milk inventory item; COOKIE DOUGH CHOC CHIP COOKIE should match a Chocolate Chip Cookie item when present.',
             'Use shipped quantity when both ordered and shipped quantities are visible.',
@@ -1303,14 +1541,17 @@ async function extractInvoiceImage(client, user, body) {
             {
               type: 'text',
               text: [
-                'Catalog items for matching:',
-                JSON.stringify(activeCatalogItems),
+                'Compact catalog hints for matching. The app will do final matching after extraction:',
+                JSON.stringify(promptCatalogItems),
                 '',
                 'Known vendors for this company:',
                 JSON.stringify(activeVendorNames),
                 '',
                 'Extract the invoice from the image. Return all rows in the line-item table and all visible totals.',
-                'Use the known vendors only as hints. If the printed invoice supplier is not in that list, still return the printed supplier.',
+                'If a catalog item is not in the compact hints, return null for item_id and still extract the line item name and codes exactly.',
+                'Use known vendors as supplier matches. If the invoice supplier matches a known vendor, return the exact known vendor name as vendor_name.',
+                'If the printed invoice supplier is not in that list, still return the printed supplier.',
+                'If Old World Coffee or Old World Coffee Roasters appears under bill-to, sold-to, ship-to, customer, or delivery fields, do not use it as vendor_name.',
                 'If the invoice has fees like fuel, freight, bottle deposit, or surcharge, include them in total_amount but not as product line items.',
               ].join('\n'),
             },
@@ -1332,9 +1573,10 @@ async function extractInvoiceImage(client, user, body) {
   const content = payload.choices?.[0]?.message?.content;
   const parsed = parseJsonObject(content, 'Invoice extraction returned unreadable data.');
   const items = normalizeExtractedItems(parsed.items, activeCatalogItems);
+  const vendorName = resolveInvoiceVendorName(parsed, vendors, items);
 
   return {
-    vendor_name: String(parsed.vendor_name || '').trim(),
+    vendor_name: vendorName,
     invoice_number: String(parsed.invoice_number || '').trim(),
     invoice_date: normalizeDate(parsed.invoice_date),
     subtotal_amount: toNumber(parsed.subtotal_amount, 0),
