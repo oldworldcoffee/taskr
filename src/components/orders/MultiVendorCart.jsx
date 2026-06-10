@@ -4,7 +4,7 @@ import { Search, ShoppingCart, RefreshCw, PackageOpen, Sparkles, ChevronRight, C
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import VendorOptionSelector from './VendorOptionSelector.jsx?v=taskr-stock-today-20260609';
+import VendorOptionSelector from './VendorOptionSelector.jsx';
 import VariantSelectionDialog from './VariantSelectionDialog';
 import { getVendorCommissaryLocationId, isCommissaryLocation } from '@/lib/inventoryLocations';
 import { getOrderUnit, pluralizeUnit } from '@/lib/inventoryOrderUnits';
@@ -23,6 +23,8 @@ const lineTotal = (item) => {
   return asNumber(item?.qty ?? item?.quantity_ordered) * asNumber(item?.unit_cost);
 };
 const cartTotal = (cart) => asArray(cart).reduce((sum, item) => sum + lineTotal(item), 0);
+const purchaseOptionsFor = (item) => Array.isArray(item?.purchase_options) ? item.purchase_options : [];
+const locationSettingsFor = (vendor) => asArray(vendor?.location_settings);
 
 export default function MultiVendorCart({
   locations, vendors, items, locInv,
@@ -43,13 +45,14 @@ export default function MultiVendorCart({
 
   const itemHasSupplierVendor = (item, vendorId) => (
     item.vendor_id === vendorId ||
-    (item.purchase_options || []).some(p => p.vendor_id === vendorId)
+    purchaseOptionsFor(item).some(p => p.vendor_id === vendorId)
   );
 
   const getSupplierVendorIdForItem = (item) => {
     if (selectedVendor && itemHasSupplierVendor(item, selectedVendor)) return selectedVendor;
-    const preferred = (item.purchase_options || []).find(p => p.is_preferred);
-    const firstPurchaseOptionVendorId = item.purchase_options?.[0]?.vendor_id;
+    const purchaseOptions = purchaseOptionsFor(item);
+    const preferred = purchaseOptions.find(p => p.is_preferred);
+    const firstPurchaseOptionVendorId = purchaseOptions[0]?.vendor_id;
 
     if (selectedIsCommissary && item.is_commissary_item) {
       return preferred?.vendor_id ||
@@ -88,8 +91,9 @@ export default function MultiVendorCart({
       return item.commissary_price;
     }
     // Otherwise use purchase option price (for commissary ordering from their suppliers)
-    const preferred = (item.purchase_options || []).find(p => p.is_preferred && p.vendor_id === vendorId) || 
-                     (item.purchase_options || []).find(p => p.vendor_id === vendorId);
+    const purchaseOptions = purchaseOptionsFor(item);
+    const preferred = purchaseOptions.find(p => p.is_preferred && p.vendor_id === vendorId) || 
+                     purchaseOptions.find(p => p.vendor_id === vendorId);
     return preferred?.unit_cost || item.unit_cost || 0;
   };
 
@@ -112,11 +116,12 @@ export default function MultiVendorCart({
   if (selectedLocation) {
     orderableVendors = orderableVendors.filter(v => {
       // If authorized_location_ids is null/empty, all locations can order
-      if (!v.authorized_location_ids || v.authorized_location_ids.length === 0) {
+      const authorizedLocationIds = asArray(v.authorized_location_ids);
+      if (authorizedLocationIds.length === 0) {
         return true;
       }
       // Otherwise, location must be in the authorized list
-      return v.authorized_location_ids.includes(selectedLocation);
+      return authorizedLocationIds.includes(selectedLocation);
     });
   }
   
@@ -186,7 +191,7 @@ export default function MultiVendorCart({
 
   const handleAddToCart = (item) => {
     // Check if item has variants (is part of a group)
-    const groupItems = itemsWithGroups.groups[item.product_group_id]?.items || [];
+    const groupItems = asArray(itemsWithGroups.groups[item.product_group_id]?.items);
     if (groupItems.length > 1) {
       // Show variant selection dialog
       setPendingAddItem(item);
@@ -222,7 +227,7 @@ export default function MultiVendorCart({
     if (Object.keys(carts).length === 0) return null;
     return (
       <div className={collapsed ? "space-y-2" : "w-96 flex flex-col gap-3 overflow-y-auto"}>
-        {Object.entries(carts || {}).filter(([vendorId]) => vendorId).map(([vendorId, vendorCart]) => {
+        {Object.entries(asObject(carts)).filter(([vendorId]) => vendorId).map(([vendorId, vendorCart]) => {
           const cartRows = asArray(vendorCart);
           const itemsInCart = cartRows.filter(c => asNumber(c.qty) > 0);
           const total = cartTotal(cartRows);
@@ -299,7 +304,7 @@ export default function MultiVendorCart({
                   <div className="p-3 border-t border-border bg-muted/30 space-y-2">
                     {(() => {
                       const vendor = vendors.find(v => v.id === vendorId);
-                      const locSettings = (vendor?.location_settings || []).find(s => s.location_id === selectedLocation);
+                      const locSettings = locationSettingsFor(vendor).find(s => s.location_id === selectedLocation);
                       const minType = locSettings?.min_order_type || vendor?.default_min_order_type || 'none';
                       const minValue = parseFloat(locSettings?.min_order_value || vendor?.default_min_order_value || 0);
                       if (minType === 'dollar' && minValue > 0 && total < minValue) {
@@ -323,7 +328,7 @@ export default function MultiVendorCart({
         })}
         {Object.keys(carts).length > 1 && (
           <Button className="w-full" disabled={!selectedLocation} onClick={onCreateAllOrders}>
-            Place All Orders (${money(Object.values(carts).reduce((s, cart) => s + cartTotal(cart), 0))})
+            Place All Orders (${money(Object.values(asObject(carts)).reduce((s, cart) => s + cartTotal(cart), 0))})
           </Button>
         )}
       </div>
@@ -399,7 +404,9 @@ export default function MultiVendorCart({
             ) : (
               <div className="grid grid-cols-2 gap-2">
                 {Object.values(itemsWithGroups.groups).map(group => {
-                  const firstItem = group.items[0];
+                  const groupItems = asArray(group.items);
+                  const firstItem = groupItems[0];
+                  if (!firstItem) return null;
                   const vendorId = getDefaultVendorIdForItem(firstItem);
                   if (!vendorId) return null;
                   const li = getLocInv(firstItem.id);
@@ -407,14 +414,14 @@ export default function MultiVendorCart({
                   const par = li?.par_level ?? null;
                   const cost = asNumber(getUnitCostForDisplay(firstItem, vendorId));
                   const unitLabel = getUnitLabelForDisplay(firstItem, vendorId);
-                  const inCart = (carts[vendorId] || []).some(c => group.items.some(gi => gi.id === c.item_id));
+                  const inCart = asArray(carts[vendorId]).some(c => groupItems.some(gi => gi.id === c.item_id));
                   return (
                     <div key={group.group_id} className={`rounded-lg border p-2.5 flex flex-col gap-1.5 ${inCart ? 'border-primary/50 bg-primary/5' : 'border-border bg-background'}`}>
                       <div className="flex items-start justify-between gap-1">
                         <p className="text-xs font-medium leading-tight flex-1">{group.name}</p>
                         {inCart && <span className="text-[10px] bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 shrink-0">✓</span>}
                       </div>
-                      <p className="text-[10px] text-muted-foreground">{group.items.length} variants · ${money(cost)} / {unitLabel}</p>
+                      <p className="text-[10px] text-muted-foreground">{groupItems.length} variants · ${money(cost)} / {unitLabel}</p>
                       {selectedLocation && onHand !== null && (
                         <p className={`text-[10px] ${onHand < (par || 0) ? 'text-orange-500 font-medium' : 'text-muted-foreground'}`}>{onHand} on hand{par ? ` / ${par} par` : ''}</p>
                       )}
@@ -432,7 +439,7 @@ export default function MultiVendorCart({
                   const par = li?.par_level ?? null;
                   const cost = asNumber(getUnitCostForDisplay(item, vendorId));
                   const unitLabel = getUnitLabelForDisplay(item, vendorId);
-                  const inCart = (carts[vendorId] || []).some(c => c.item_id === item.id);
+                  const inCart = asArray(carts[vendorId]).some(c => c.item_id === item.id);
                   return (
                     <div key={item.id} className={`rounded-lg border p-2.5 flex flex-col gap-1.5 ${inCart ? 'border-primary/50 bg-primary/5' : 'border-border bg-background'}`}>
                       <div className="flex items-start justify-between gap-1">
@@ -466,7 +473,7 @@ export default function MultiVendorCart({
           open={!!variantDialog}
           onOpenChange={(open) => { if (!open) { setVariantDialog(null); setPendingAddItem(null); } }}
           group={variantDialog}
-          items={variantDialog?.items || []}
+          items={asArray(variantDialog?.items)}
           onConfirm={handleVariantConfirm}
         />
       </div>
@@ -575,7 +582,9 @@ export default function MultiVendorCart({
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {/* Render grouped items */}
               {Object.values(itemsWithGroups.groups).map(group => {
-                const firstItem = group.items[0];
+                const groupItems = asArray(group.items);
+                const firstItem = groupItems[0];
+                if (!firstItem) return null;
                 const vendorId = getDefaultVendorIdForItem(firstItem);
                 
                 if (!vendorId) return null;
@@ -587,8 +596,8 @@ export default function MultiVendorCart({
                 const unitLabel = getUnitLabelForDisplay(firstItem, vendorId);
                 
                 // Check if any variant is in cart
-                const vendorCart = vendorId ? (carts[vendorId] || []) : [];
-                const inCart = vendorCart?.some(c => group.items.some(gi => gi.id === c.item_id));
+                const vendorCart = vendorId ? asArray(carts[vendorId]) : [];
+                const inCart = vendorCart.some(c => groupItems.some(gi => gi.id === c.item_id));
 
                 return (
                   <div
@@ -600,7 +609,7 @@ export default function MultiVendorCart({
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium leading-tight truncate">{group.name || 'Unnamed item'}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">{group.items.length} variants</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{groupItems.length} variants</p>
                         {firstItem.category && <p className="text-xs text-muted-foreground mt-0.5">{firstItem.category}</p>}
                         <p className="text-xs text-muted-foreground mt-0.5">{getVendorName(vendorId)}</p>
                       </div>
@@ -616,9 +625,9 @@ export default function MultiVendorCart({
                           {onHand} on hand {par ? `/ ${par} par` : ''}
                         </span>
                       )}
-                      {group.items.length > 1 && (
+                      {groupItems.length > 1 && (
                         <div className="flex flex-wrap gap-1 mt-0.5">
-                          {group.items.map(v => {
+                          {groupItems.map(v => {
                             const vli = getLocInv(v.id);
                             const vOnHand = vli?.on_hand_quantity ?? 0;
                             return (
@@ -654,8 +663,8 @@ export default function MultiVendorCart({
                 const par = li?.par_level ?? null;
                   const cost = asNumber(getUnitCostForDisplay(item, vendorId));
                 const unitLabel = getUnitLabelForDisplay(item, vendorId);
-                const vendorCart = vendorId ? (carts[vendorId] || []) : [];
-                const inCart = vendorCart?.some(c => c.item_id === item.id);
+                const vendorCart = vendorId ? asArray(carts[vendorId]) : [];
+                const inCart = vendorCart.some(c => c.item_id === item.id);
 
                 return (
                   <div
@@ -716,7 +725,7 @@ export default function MultiVendorCart({
         open={!!variantDialog}
         onOpenChange={(open) => { if (!open) { setVariantDialog(null); setPendingAddItem(null); } }}
         group={variantDialog}
-        items={variantDialog?.items || []}
+        items={asArray(variantDialog?.items)}
         onConfirm={handleVariantConfirm}
       />
     </div>
