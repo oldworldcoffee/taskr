@@ -729,17 +729,26 @@ export default function Invoices() {
 
     setSavingPurchaseOptionIdx(rowIdx);
     try {
+      const nextPurchaseOptions = [...(item.purchase_options || []), nextOption];
       const updated = await base44.entities.InventoryItem.update(item.id, {
-        purchase_options: [...(item.purchase_options || []), nextOption],
+        purchase_options: nextPurchaseOptions,
         unit_cost: item.unit_cost || nextOption.unit_cost,
         vendor_id: item.vendor_id || nextOption.vendor_id || '',
       });
+      const savedItem = updated || {
+        ...item,
+        purchase_options: nextPurchaseOptions,
+        unit_cost: item.unit_cost || nextOption.unit_cost,
+        vendor_id: item.vendor_id || nextOption.vendor_id || '',
+      };
 
-      setItems(prev => prev.map(existing => existing.id === updated.id ? { ...existing, ...updated } : existing));
+      setItems(prev => prev.map(existing => existing.id === savedItem.id ? { ...existing, ...savedItem } : existing));
       setReviewDialog(prev => {
+        if (!prev) return prev;
         const its = [...(prev.extracted_items || [])];
-        its[idx] = {
-          ...its[idx],
+        if (!its[rowIdx]) return prev;
+        its[rowIdx] = {
+          ...its[rowIdx],
           purchase_option_missing: false,
           purchase_option_matched: true,
           purchase_option_added: true,
