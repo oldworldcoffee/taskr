@@ -4,22 +4,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { defineConfig } from 'vite'
 
 const dirname = path.dirname(fileURLToPath(import.meta.url))
-const apiFunctionUrl = pathToFileURL(path.resolve(dirname, 'api/functions/[name].js')).href
-const localApiFunctionNames = new Set([
-  'extractInvoiceImage',
-  'inventoryExtractInvoiceImage',
-  'reviewOrderBeforeSend',
-  'inventoryReviewOrderBeforeSend',
-  'calculateSmartParsAfterCount',
-  'inventoryCalculateSmartParsAfterCount',
-])
+const apiFunctionPath = path.resolve(dirname, 'api/functions/[name].js')
+const apiFunctionUrl = pathToFileURL(apiFunctionPath).href
 
 function localApiFunctionsPlugin() {
   return {
     name: 'taskr-local-api-functions',
     apply: 'serve',
     configureServer(server) {
-      console.info('[taskr] local AI API functions enabled at /api/functions/:name')
+      console.info('[taskr] local API functions enabled at /api/functions/:name')
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url || '/', 'http://localhost')
         const match = url.pathname.match(/^\/api\/functions\/([^/]+)$/)
@@ -28,19 +21,20 @@ function localApiFunctionsPlugin() {
           return
         }
 
-        const name = decodeURIComponent(match[1])
-        if (!localApiFunctionNames.has(name)) {
-          next()
-          return
-        }
-
-        req.query = { name }
+        req.query = { name: decodeURIComponent(match[1]) }
         console.info(`[taskr] ${req.method || 'GET'} /api/functions/${req.query.name}`)
         try {
-          const { default: handler } = await import(`${apiFunctionUrl}?t=${Date.now()}`)
+          // ssrLoadModule tracks the import graph, so edits to api/_lib/*.js
+          // take effect on the next request without restarting the dev server.
+          let handler
+          try {
+            ;({ default: handler } = await server.ssrLoadModule(apiFunctionPath))
+          } catch {
+            ;({ default: handler } = await import(`${apiFunctionUrl}?t=${Date.now()}`))
+          }
           await handler(req, res)
         } catch (error) {
-          console.error(`[taskr] local API function ${name} failed`, error)
+          console.error(`[taskr] local API function ${req.query.name} failed`, error)
           if (!res.headersSent) {
             res.statusCode = error.status || 500
             res.setHeader('Content-Type', 'application/json')

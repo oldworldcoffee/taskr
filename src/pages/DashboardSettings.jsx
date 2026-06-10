@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Plus, MapPin, Pencil, Trash2, Building2, ImageIcon, CreditCard, DollarSign, AlertTriangle } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import TimezoneSelect, { TIMEZONE_UNSET, getBrowserTimezone } from "@/components/shared/TimezoneSelect";
 import { toast } from "sonner";
 
 export default function DashboardSettings() {
@@ -100,11 +101,13 @@ export default function DashboardSettings() {
   const [locName, setLocName] = useState("");
   const [locAddress, setLocAddress] = useState("");
   const [locDrawerAmount, setLocDrawerAmount] = useState("");
+  const [locTimezone, setLocTimezone] = useState(getBrowserTimezone());
   const [editLocDialog, setEditLocDialog] = useState(false);
   const [editingLoc, setEditingLoc] = useState(null);
   const [editLocName, setEditLocName] = useState("");
   const [editLocAddress, setEditLocAddress] = useState("");
   const [editLocDrawerAmount, setEditLocDrawerAmount] = useState("");
+  const [editLocTimezone, setEditLocTimezone] = useState(TIMEZONE_UNSET);
   const [deleteLocDialog, setDeleteLocDialog] = useState(false);
   const [deletingLoc, setDeletingLoc] = useState(null);
   const [companyDrawerAmount, setCompanyDrawerAmount] = useState("200.00");
@@ -158,6 +161,7 @@ export default function DashboardSettings() {
         name: locName.trim(),
         address: locAddress.trim(),
         cash_drawer_amount: normalizeOptionalMoney(locDrawerAmount),
+        timezone: locTimezone === TIMEZONE_UNSET ? null : locTimezone,
       });
       if (res.data.error) {
         toast.error(res.data.error);
@@ -168,6 +172,7 @@ export default function DashboardSettings() {
       setLocName("");
       setLocAddress("");
       setLocDrawerAmount("");
+      setLocTimezone(getBrowserTimezone());
       toast.success("Location added");
     } catch (err) {
       toast.error(err.message || "Failed to add location");
@@ -184,19 +189,25 @@ export default function DashboardSettings() {
     setEditLocName(loc.name);
     setEditLocAddress(loc.address || "");
     setEditLocDrawerAmount(hasLocationDrawerOverride(loc) ? formatMoneyInput(loc.cash_drawer_amount) : "");
+    setEditLocTimezone(loc.timezone || TIMEZONE_UNSET);
     setEditLocDialog(true);
   };
 
   const handleEditLoc = async () => {
     if (!editLocName.trim() || !editingLoc) return;
-    await base44.entities.Location.update(editingLoc.id, {
-      name: editLocName.trim(),
-      address: editLocAddress.trim(),
-      cash_drawer_amount: normalizeOptionalMoney(editLocDrawerAmount),
-    });
-    queryClient.invalidateQueries({ queryKey: ["locations"] });
-    setEditLocDialog(false);
-    toast.success("Location updated");
+    try {
+      await base44.entities.Location.update(editingLoc.id, {
+        name: editLocName.trim(),
+        address: editLocAddress.trim(),
+        cash_drawer_amount: normalizeOptionalMoney(editLocDrawerAmount),
+        timezone: editLocTimezone === TIMEZONE_UNSET ? null : editLocTimezone,
+      });
+      queryClient.invalidateQueries({ queryKey: ["locations"] });
+      setEditLocDialog(false);
+      toast.success("Location updated");
+    } catch (err) {
+      toast.error(err.message || "Failed to update location");
+    }
   };
 
   const saveCompanyDrawerAmount = async () => {
@@ -334,6 +345,8 @@ export default function DashboardSettings() {
                 <p className="text-xs text-muted-foreground mt-1">
                   Drawer: ${drawerForLocation(loc).toFixed(2)}
                   {!hasLocationDrawerOverride(loc) && " default"}
+                  {" · "}
+                  {loc.timezone ? loc.timezone.replace(/_/g, " ") : "Timezone not set (UTC)"}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -371,6 +384,11 @@ export default function DashboardSettings() {
                 placeholder={companyDrawerAmount || "200.00"}
               />
             </div>
+            <div>
+              <Label>Timezone</Label>
+              <TimezoneSelect value={locTimezone} onChange={setLocTimezone} />
+              <p className="text-xs text-muted-foreground mt-1">Used for end-of-day inventory snapshots.</p>
+            </div>
           </div>
           <DialogFooter><Button onClick={addLocation} disabled={!locName.trim()}>Add Location</Button></DialogFooter>
         </DialogContent>
@@ -395,6 +413,11 @@ export default function DashboardSettings() {
                 onKeyDown={preventNegativeAmountKey}
                 placeholder={companyDrawerAmount || "200.00"}
               />
+            </div>
+            <div>
+              <Label>Timezone</Label>
+              <TimezoneSelect value={editLocTimezone} onChange={setEditLocTimezone} />
+              <p className="text-xs text-muted-foreground mt-1">Used for end-of-day inventory snapshots.</p>
             </div>
           </div>
           <DialogFooter>

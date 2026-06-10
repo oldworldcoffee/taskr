@@ -14,8 +14,9 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { CATEGORY_GROUPS, categoryForName, categoryGroupLabel } from '@/lib/inventoryCategories';
+import { normalizeUom } from '@/lib/recipePricing';
 
-const UOM_OPTIONS = ['EA', 'fl-oz', 'oz', 'ml', 'L', 'Qt', 'gal', 'g', 'gr', 'kg', 'lb'];
+const UOM_OPTIONS = ['EA', 'fl-oz', 'ml', 'L', 'Pt', 'Qt', 'gal', 'oz', 'lb', 'g', 'kg'];
 const EMPTY_OPTION = { vendor_id: '', vendor_name: '', product_name: '', product_code: '', unit_cost: '', unit_of_measure: '', inner_pack_uom: '', inner_pack_units: '', inner_pack_name: '', packs_per_case: '', is_preferred: false, notes: '', location_ids: null };
 
 function CategoryPicker({ value, categories = [], onChange }) {
@@ -310,9 +311,35 @@ export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave
     setForm(f => ({ ...f, count_units: next }));
   };
 
+  // Item counted in EA but purchased in a weight/volume unit cannot convert
+  // without an explicit "X each per Y <uom>" bridge. UOMs are normalized so
+  // legacy casing/aliases ("Kg", "Gallon") still match.
+  const MEASURABLE_UOMS = UOM_OPTIONS.filter(u => u !== 'EA');
+  const eachMismatchUom = normalizeUom(form.unit_of_measure) === 'EA'
+    ? ((form.purchase_options || [])
+        .map(o => normalizeUom(o.inner_pack_uom || o.unit_of_measure))
+        .find(u => MEASURABLE_UOMS.includes(u)) || null)
+    : null;
+
+  const updateEachConversion = (patch) => {
+    setForm(f => ({
+      ...f,
+      each_conversion: { uom: eachMismatchUom || '', ...(f.each_conversion || {}), ...patch },
+    }));
+  };
+
   const handleSave = async () => {
+    const conv = form.each_conversion || {};
+    const hasValidConversion = parseFloat(conv.each_count) > 0 && parseFloat(conv.quantity) > 0 && conv.uom;
+    if (eachMismatchUom && !hasValidConversion) {
+      toast.error(`This item is counted in EA but purchased in ${eachMismatchUom}. Fill in the each conversion so costs can be calculated.`);
+      return;
+    }
     const filledForm = {
       ...form,
+      each_conversion: hasValidConversion
+        ? { each_count: parseFloat(conv.each_count), quantity: parseFloat(conv.quantity), uom: conv.uom }
+        : null,
       purchase_options: (form.purchase_options || []).map(o => ({ ...o, unit_of_measure: o.unit_of_measure || form.unit_of_measure || '' })),
     };
     const didSave = await onSave(filledForm, variants);
@@ -354,6 +381,42 @@ export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave
                 <option value="">— Select UOM —</option>
                 {UOM_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
               </select>
+              {eachMismatchUom && (
+                <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50/60 p-2.5">
+                  <p className="text-xs font-medium text-amber-800">
+                    Counted in EA but purchased in {eachMismatchUom} — enter the conversion so costs can be calculated.
+                  </p>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                    <Input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="12"
+                      className="w-20 h-8"
+                      value={form.each_conversion?.each_count ?? ''}
+                      onChange={e => updateEachConversion({ each_count: e.target.value })}
+                    />
+                    <span className="text-xs text-amber-800">EA per</span>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="5"
+                      className="w-20 h-8"
+                      value={form.each_conversion?.quantity ?? ''}
+                      onChange={e => updateEachConversion({ quantity: e.target.value })}
+                    />
+                    <select
+                      className="h-8 border border-input rounded-md px-2 text-sm bg-background"
+                      value={form.each_conversion?.uom || eachMismatchUom}
+                      onChange={e => updateEachConversion({ uom: e.target.value })}
+                    >
+                      {MEASURABLE_UOMS.map(u => <option key={u} value={u}>{u}</option>)}
+                    </select>
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-amber-700">Example: 12 EA per 5 lb of oranges.</p>
+                </div>
+              )}
             </div>
             <div>
               <Label>SKU / Internal Code</Label>

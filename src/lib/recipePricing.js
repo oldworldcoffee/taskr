@@ -5,14 +5,16 @@ export const DEFAULT_WASTE_MARGIN = 0.05;
 export const DEFAULT_YELLOW_MARGIN_POINTS = 0.05;
 const RED_MARGIN_OFFSET_POINTS = 0.05;
 
-export const RECIPE_UOM_OPTIONS = ['EA', 'fl-oz', 'oz', 'ml', 'L', 'Qt', 'gal', 'g', 'gr', 'kg', 'lb'];
+export const RECIPE_UOM_OPTIONS = ['EA', 'fl-oz', 'ml', 'L', 'Pt', 'Qt', 'gal', 'oz', 'lb', 'g', 'kg'];
 
 const UOM_DEFINITIONS = {
   'fl-oz': { family: 'volume', toBase: 1 },
   floz: { family: 'volume', toBase: 1 },
-  oz: { family: 'volume', toBase: 1 },
+  // oz is the avoirdupois (dry-weight) ounce; fluid ounces are fl-oz.
+  oz: { family: 'weight', toBase: 28.3495 },
   ml: { family: 'volume', toBase: 0.033814 },
   l: { family: 'volume', toBase: 33.814 },
+  pt: { family: 'volume', toBase: 16 },
   qt: { family: 'volume', toBase: 32 },
   gal: { family: 'volume', toBase: 128 },
   g: { family: 'weight', toBase: 1 },
@@ -34,6 +36,7 @@ export function normalizeUom(uom) {
     .replace(/\s+/g, '');
 
   if (key === 'liter' || key === 'litre' || key === 'liters' || key === 'litres') return 'L';
+  if (key === 'pint' || key === 'pints') return 'Pt';
   if (key === 'quart' || key === 'quarts') return 'Qt';
   if (key === 'gallon' || key === 'gallons') return 'gal';
   if (key === 'each') return 'EA';
@@ -55,6 +58,44 @@ export function convertQuantity(quantity, fromUom, toUom) {
 
 function convertUnitCost(costPerFromUom, fromUom, toUom) {
   const oneToUnitInFromUnits = convertQuantity(1, toUom, fromUom);
+  if (oneToUnitInFromUnits == null) return null;
+  return toNumber(costPerFromUom) * oneToUnitInFromUnits;
+}
+
+// Items counted in EA but purchased by weight/volume can declare a bridge,
+// e.g. { each_count: 12, quantity: 5, uom: 'lb' } means 12 EA = 5 lb.
+export function eachConversionFor(item) {
+  const conv = item?.each_conversion;
+  const eachCount = toNumber(conv?.each_count);
+  const quantity = toNumber(conv?.quantity);
+  const uom = normalizeUom(conv?.uom || '');
+  if (eachCount <= 0 || quantity <= 0 || !uom || uom === 'EA') return null;
+  return { eachCount, quantity, uom };
+}
+
+export function convertQuantityForItem(item, quantity, fromUom, toUom) {
+  const direct = convertQuantity(quantity, fromUom, toUom);
+  if (direct != null) return direct;
+
+  const conv = eachConversionFor(item);
+  if (!conv) return null;
+  const from = normalizeUom(fromUom);
+  const to = normalizeUom(toUom);
+
+  if (from === 'EA') {
+    const inConvUom = (toNumber(quantity) / conv.eachCount) * conv.quantity;
+    return convertQuantity(inConvUom, conv.uom, to);
+  }
+  if (to === 'EA') {
+    const inConvUom = convertQuantity(quantity, fromUom, conv.uom);
+    if (inConvUom == null) return null;
+    return (inConvUom / conv.quantity) * conv.eachCount;
+  }
+  return null;
+}
+
+function convertUnitCostForItem(item, costPerFromUom, fromUom, toUom) {
+  const oneToUnitInFromUnits = convertQuantityForItem(item, 1, toUom, fromUom);
   if (oneToUnitInFromUnits == null) return null;
   return toNumber(costPerFromUom) * oneToUnitInFromUnits;
 }
@@ -191,10 +232,10 @@ function fallbackItemUnitCost(item) {
   }
 
   if (costPerPackUom != null) {
-    return convertUnitCost(costPerPackUom, packUom, itemUom) ?? costPerPackUom;
+    return convertUnitCostForItem(item, costPerPackUom, packUom, itemUom) ?? costPerPackUom;
   }
 
-  return convertUnitCost(cost, orderingUom, itemUom) ?? cost;
+  return convertUnitCostForItem(item, cost, orderingUom, itemUom) ?? cost;
 }
 
 export function buildPricingContext({
@@ -389,7 +430,7 @@ export function calculateLineCostDetail(line, ctx, sizeId) {
   const itemId = line.item_id || line.source_id;
   const item = ctx.itemById.get(itemId);
   const toUom = item?.unit_of_measure || '';
-  const convertedAmount = convertQuantity(amount, line.unit_of_measure, toUom);
+  const convertedAmount = convertQuantityForItem(item, amount, line.unit_of_measure, toUom);
   const finalAmount = convertedAmount ?? amount;
   const unitCost = toNumber(ctx.unitCostByItemId.get(itemId));
   return {

@@ -14,6 +14,9 @@ const INVENTORY_FUNCTIONS = new Set([
   'inventorySendVendorOrderEmail',
   'inventoryCancelVendorOrderEmail',
   'inventoryReviewOrderBeforeSend',
+  'inventoryReviewCatalog',
+  'inventoryAiPrepareCatalogImport',
+  'inventoryAiCommitCatalogImport',
   'inventoryCalculateSmartParsAfterCount',
   'inventoryFulfillCommissaryOrder',
   'inventoryScrapeProductImage',
@@ -34,6 +37,9 @@ const INVENTORY_ALIASES = {
   sendVendorOrderEmail: 'inventorySendVendorOrderEmail',
   cancelVendorOrderEmail: 'inventoryCancelVendorOrderEmail',
   reviewOrderBeforeSend: 'inventoryReviewOrderBeforeSend',
+  reviewCatalog: 'inventoryReviewCatalog',
+  aiPrepareCatalogImport: 'inventoryAiPrepareCatalogImport',
+  aiCommitCatalogImport: 'inventoryAiCommitCatalogImport',
   calculateSmartParsAfterCount: 'inventoryCalculateSmartParsAfterCount',
   fulfillCommissaryOrder: 'inventoryFulfillCommissaryOrder',
   scrapeProductImage: 'inventoryScrapeProductImage',
@@ -1335,6 +1341,557 @@ async function calculateSmartParsAfterCount(client, companyId, body) {
   };
 }
 
+const CATALOG_VALID_UOMS = ['EA', 'fl-oz', 'ml', 'L', 'Pt', 'Qt', 'gal', 'oz', 'lb', 'g', 'kg'];
+
+const CATALOG_UOM_FAMILIES = {
+  'fl-oz': 'volume',
+  ml: 'volume',
+  L: 'volume',
+  Pt: 'volume',
+  Qt: 'volume',
+  gal: 'volume',
+  oz: 'weight',
+  lb: 'weight',
+  g: 'weight',
+  gr: 'weight',
+  kg: 'weight',
+  EA: 'count',
+};
+
+function catalogIssue(item, type, severity, message, fix = null) {
+  return {
+    item_id: item.id,
+    item_name: item.name || 'Unnamed item',
+    type,
+    severity,
+    message,
+    fix,
+  };
+}
+
+function auditCatalogItem(item) {
+  const issues = [];
+  const options = Array.isArray(item.purchase_options) ? item.purchase_options : [];
+  const uom = String(item.unit_of_measure || '').trim();
+
+  if (!uom) {
+    issues.push(catalogIssue(item, 'missing_uom', 'error', 'No unit of measure is set, so counts and pricing cannot be calculated.'));
+  } else if (!CATALOG_VALID_UOMS.includes(uom)) {
+    issues.push(catalogIssue(item, 'invalid_uom', 'error', `"${uom}" is not a supported unit of measure.`));
+  }
+
+  if (!String(item.category || '').trim()) {
+    issues.push(catalogIssue(item, 'missing_category', 'warning', 'No subcategory is set, so the item is hard to find in filters and reports.'));
+  }
+
+  if (!options.length) {
+    issues.push(catalogIssue(item, 'missing_purchase_options', 'error', 'No purchase options are set, so this item cannot be ordered from a vendor.'));
+  }
+
+  options.forEach((option, index) => {
+    const label = option.vendor_name || option.product_name || `Option ${index + 1}`;
+    if (!option.vendor_id && !String(option.vendor_name || '').trim()) {
+      issues.push(catalogIssue(item, 'option_missing_vendor', 'warning', `Purchase option ${index + 1} has no vendor assigned.`));
+    }
+    if (!toNumber(option.unit_cost, 0)) {
+      issues.push(catalogIssue(item, 'option_missing_cost', 'warning', `Purchase option "${label}" has no unit cost, so price comparisons skip it.`));
+    }
+    const orderingUom = String(option.unit_of_measure || '').trim();
+    if (orderingUom.toLowerCase() === 'case' && (!toNumber(option.inner_pack_units, 0) || !toNumber(option.packs_per_case, 0))) {
+      issues.push(catalogIssue(item, 'option_missing_pack_size', 'warning', `Purchase option "${label}" is ordered by the case but is missing pack size details, so per-unit pricing cannot be calculated.`));
+    }
+    const packUom = String(option.inner_pack_uom || '').trim();
+    if (uom && packUom && CATALOG_UOM_FAMILIES[packUom] && CATALOG_UOM_FAMILIES[uom] && CATALOG_UOM_FAMILIES[packUom] !== CATALOG_UOM_FAMILIES[uom]) {
+      issues.push(catalogIssue(item, 'option_uom_mismatch', 'warning', `Purchase option "${label}" packs are measured in ${packUom} (${CATALOG_UOM_FAMILIES[packUom]}), which cannot convert to the item unit ${uom} (${CATALOG_UOM_FAMILIES[uom]}).`));
+    }
+  });
+
+  if (Array.isArray(item.count_units) && !item.count_units.length) {
+    issues.push(catalogIssue(
+      item,
+      'no_count_units',
+      'suggestion',
+      'No counting units are selected in the item editor, so inventory counts fall back to the default units derived from purchase options.',
+      { field: 'count_units', label: 'Reset to the default counting units', value: null }
+    ));
+  }
+
+  return issues;
+}
+
+function catalogReviewContext(item) {
+  const options = Array.isArray(item.purchase_options) ? item.purchase_options : [];
+  return {
+    item_id: item.id,
+    item_name: item.name || '',
+    description: item.description || '',
+    category: item.category || '',
+    unit_of_measure: item.unit_of_measure || '',
+    purchase_options: options.map((option) => ({
+      vendor: option.vendor_name || '',
+      product: option.product_name || '',
+      ordering_uom: option.unit_of_measure || '',
+      inner_pack_uom: option.inner_pack_uom || '',
+      inner_pack_units: toNumber(option.inner_pack_units, 0),
+      packs_per_case: toNumber(option.packs_per_case, 0),
+    })),
+  };
+}
+
+async function openAiCatalogReviewBatch(apiKey, model, batch, categories) {
+  const parsed = await requestOpenAiJson({
+    apiKey,
+    model,
+    errorMessage: 'OpenAI catalog review returned unreadable data.',
+    messages: [
+      {
+        role: 'system',
+        content: [
+          'You audit inventory catalogs for restaurants, coffee shops, and retail operators.',
+          `Supported units of measure: ${CATALOG_VALID_UOMS.join(', ')}. EA means each/count, oz is dry weight, fl-oz is fluid volume.`,
+          'For each item judge whether the unit of measure fits how the item is realistically stocked and counted (liquids in volume units, bulk dry goods in weight units, packaged or discrete goods in EA), and whether the category fits the item.',
+          'When an item has no unit of measure or no category, treat it as not ok and suggest the best value.',
+          'Otherwise only flag clear mistakes; when in doubt mark the item ok.',
+          'When you flag a unit, suggest the best supported unit. When you flag a category, suggest one from available_categories only.',
+          'Return JSON only: {"results":[{"item_id":"","uom_ok":true,"suggested_uom":"","uom_reason":"","category_ok":true,"suggested_category":"","category_reason":""}]}',
+          'Use only item_id values provided by the user.',
+        ].join(' '),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({ available_categories: categories, items: batch }),
+      },
+    ],
+  });
+  return asInventoryArray(parsed.results);
+}
+
+async function reviewCatalog(client, companyId) {
+  const [items, categoryRows] = await Promise.all([
+    fetchCompanyRows(client, 'inventory_items', companyId),
+    fetchCompanyRows(client, 'inventory_categories', companyId).catch(() => []),
+  ]);
+  const activeItems = items.filter((item) => item.is_active !== false);
+  const issues = activeItems.flatMap(auditCatalogItem);
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = inventoryAiModel();
+
+  if (apiKey && activeItems.length) {
+    const categoryNames = [...new Set(
+      [
+        ...categoryRows.filter((category) => category.is_active !== false).map((category) => category.name),
+        ...activeItems.map((item) => item.category),
+      ].map((name) => String(name || '').trim()).filter(Boolean)
+    )].sort();
+    const itemsById = new Map(activeItems.map((item) => [String(item.id), item]));
+
+    // Rule-based issues for the same field absorb the AI suggestion instead of
+    // becoming a duplicate row (e.g. "missing category" + the suggested category).
+    const issueByField = new Map();
+    for (const issue of issues) {
+      if (issue.type === 'missing_uom' || issue.type === 'invalid_uom') issueByField.set(`${issue.item_id}:unit_of_measure`, issue);
+      if (issue.type === 'missing_category') issueByField.set(`${issue.item_id}:category`, issue);
+    }
+    const addSuggestion = (item, field, type, message, label, value) => {
+      const existing = issueByField.get(`${item.id}:${field}`);
+      const fix = { field, label, value };
+      if (existing && !existing.fix) {
+        existing.fix = fix;
+        existing.message = `${existing.message} ${message}`;
+      } else {
+        issues.push(catalogIssue(item, type, 'suggestion', message, fix));
+      }
+    };
+
+    const batches = chunkArray(activeItems.map(catalogReviewContext), 40);
+    const batchResults = await Promise.all(
+      batches.map((batch) => openAiCatalogReviewBatch(apiKey, model, batch, categoryNames))
+    );
+    for (const rows of batchResults) {
+      for (const row of rows) {
+        const item = itemsById.get(String(row.item_id || ''));
+        if (!item) continue;
+
+        const suggestedUom = String(row.suggested_uom || '').trim();
+        if (row.uom_ok === false && CATALOG_VALID_UOMS.includes(suggestedUom) && suggestedUom !== (item.unit_of_measure || '')) {
+          addSuggestion(
+            item,
+            'unit_of_measure',
+            'uom_suggestion',
+            cleanShortText(row.uom_reason) || `The unit "${item.unit_of_measure || 'none'}" looks wrong for this item.`,
+            `Change unit of measure to ${suggestedUom}`,
+            suggestedUom
+          );
+        }
+
+        const suggestedCategory = cleanShortText(row.suggested_category, 80);
+        if (row.category_ok === false && suggestedCategory && categoryNames.includes(suggestedCategory) && suggestedCategory !== (item.category || '')) {
+          addSuggestion(
+            item,
+            'category',
+            'category_suggestion',
+            cleanShortText(row.category_reason) || `The category "${item.category || 'none'}" looks wrong for this item.`,
+            `Change category to ${suggestedCategory}`,
+            suggestedCategory
+          );
+        }
+      }
+    }
+  }
+
+  return {
+    success: true,
+    ai_source: apiKey ? 'openai' : 'rules_only',
+    model: apiKey ? model : undefined,
+    warning: apiKey ? '' : 'OpenAI is not configured yet, so Taskr ran the built-in catalog checks without AI suggestions.',
+    items_reviewed: activeItems.length,
+    issues,
+  };
+}
+
+const AI_IMPORT_FIELDS = [
+  'item_name', 'sku', 'category', 'unit_of_measure', 'unit_cost', 'description',
+  'is_commissary_item', 'commissary_price', 'is_active',
+  'vendor_name', 'vendor_email', 'product_name', 'product_code', 'pack_size',
+  'inner_pack_units', 'inner_pack_name', 'packs_per_case',
+];
+
+async function openAiImportColumnMap(apiKey, model, headers, sampleRows) {
+  const parsed = await requestOpenAiJson({
+    apiKey,
+    model,
+    errorMessage: 'OpenAI could not read the file structure.',
+    messages: [
+      {
+        role: 'system',
+        content: [
+          'You map spreadsheet columns for an inventory catalog import in a restaurant/coffee shop app.',
+          `Target fields: ${AI_IMPORT_FIELDS.join(', ')}.`,
+          'item_name is the inventory item name (required). product_name and product_code describe the vendor-specific purchase option. unit_cost is the purchase price. vendor_name is the supplier.',
+          'Match on meaning, not exact wording (e.g. "Supplier" -> vendor_name, "Price" -> unit_cost, "Qty per pack" -> inner_pack_units).',
+          'Use each source column for at most one target field; use null when nothing matches.',
+          'Return JSON only: {"column_map":{"<target field>":"<exact source column name or null>"}}',
+        ].join(' '),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({ columns: headers, sample_rows: sampleRows }),
+      },
+    ],
+  });
+  return parsed.column_map || {};
+}
+
+async function openAiImportValues(apiKey, model, payload) {
+  const parsed = await requestOpenAiJson({
+    apiKey,
+    model,
+    errorMessage: 'OpenAI could not normalize the file values.',
+    messages: [
+      {
+        role: 'system',
+        content: [
+          'You assist an inventory catalog import for a restaurant/coffee shop app.',
+          `Supported units of measure: ${CATALOG_VALID_UOMS.join(', ')} (EA = each/count, oz = dry weight, fl-oz = fluid volume).`,
+          'Map each provided unit value to the closest supported unit, or null when unclear.',
+          'Map each provided category value to one of existing_categories when it clearly means the same thing, otherwise null.',
+          'List import_item_names that almost certainly refer to the same product as an existing_item_names entry (same product with different spelling, abbreviations, or formatting) as duplicate pairs. Do not pair items that are merely similar products.',
+          'Return JSON only: {"uom_map":{"<value>":"<supported unit or null>"},"category_map":{"<value>":"<existing category or null>"},"duplicates":[{"import_name":"","existing_name":""}]}',
+        ].join(' '),
+      },
+      { role: 'user', content: JSON.stringify(payload) },
+    ],
+  });
+  return parsed;
+}
+
+async function aiPrepareCatalogImport(client, user, body) {
+  const companyId = user.company_id;
+  let csvText = String(body.csv_text || '').trim();
+  if (!csvText && body.file_url) {
+    const response = await fetch(body.file_url);
+    if (!response.ok) throw httpError(400, `Unable to download catalog file (${response.status})`);
+    csvText = (await response.text()).trim();
+  }
+  if (!csvText) throw httpError(400, 'Catalog file is required.');
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw httpError(400, 'OpenAI is not configured, so AI import is unavailable. Use the template import instead.');
+
+  const rows = parseCsv(csvText);
+  if (!rows.length) throw httpError(400, 'No data rows found in the file.');
+  const headers = Object.keys(rows[0] || {}).filter(Boolean);
+
+  const model = inventoryAiModel();
+  const rawColumnMap = await openAiImportColumnMap(apiKey, model, headers, rows.slice(0, 8));
+  const columnMap = {};
+  for (const field of AI_IMPORT_FIELDS) {
+    const column = rawColumnMap[field];
+    columnMap[field] = headers.includes(column) ? column : null;
+  }
+  if (!columnMap.item_name) throw httpError(422, 'Could not identify an item name column in this file.');
+
+  const valueOf = (row, field) => (columnMap[field] ? String(row[columnMap[field]] ?? '').trim() : '');
+
+  const [existingItems, categoryRows] = await Promise.all([
+    fetchCompanyRows(client, 'inventory_items', companyId),
+    fetchCompanyRows(client, 'inventory_categories', companyId).catch(() => []),
+  ]);
+  const existingByNorm = new Map(existingItems.map((item) => [normalizeMatchText(item.name), item]));
+  const categoryNames = [...new Set(
+    [
+      ...categoryRows.filter((category) => category.is_active !== false).map((category) => category.name),
+      ...existingItems.map((item) => item.category),
+    ].map((name) => String(name || '').trim()).filter(Boolean)
+  )].sort();
+
+  // Group file rows into items (one item may span several rows = purchase options).
+  const grouped = new Map();
+  let rowsSkipped = 0;
+  for (const row of rows) {
+    const name = valueOf(row, 'item_name');
+    if (!name) {
+      rowsSkipped += 1;
+      continue;
+    }
+    if (!grouped.has(name)) grouped.set(name, []);
+    grouped.get(name).push(row);
+  }
+  if (!grouped.size) throw httpError(422, 'No rows with an item name were found in this file.');
+
+  // Collect values that need AI normalization, plus names for fuzzy duplicate detection.
+  const uomValues = new Set();
+  const categoryValues = new Set();
+  for (const itemRows of grouped.values()) {
+    for (const row of itemRows) {
+      const uom = valueOf(row, 'unit_of_measure');
+      if (uom && !CATALOG_VALID_UOMS.includes(uom)) uomValues.add(uom);
+      const category = valueOf(row, 'category');
+      if (category && !categoryNames.includes(category)) categoryValues.add(category);
+    }
+  }
+  const namesForDupeCheck = [...grouped.keys()]
+    .filter((name) => !existingByNorm.has(normalizeMatchText(name)))
+    .slice(0, 300);
+
+  let uomMap = {};
+  let categoryMap = {};
+  const aiDupeByNorm = new Map();
+  if (uomValues.size || categoryValues.size || (namesForDupeCheck.length && existingItems.length)) {
+    const values = await openAiImportValues(apiKey, model, {
+      uom_values: [...uomValues].slice(0, 40),
+      category_values: [...categoryValues].slice(0, 40),
+      existing_categories: categoryNames,
+      import_item_names: namesForDupeCheck,
+      existing_item_names: existingItems.map((item) => item.name).filter(Boolean).slice(0, 500),
+    });
+    uomMap = values.uom_map || {};
+    categoryMap = values.category_map || {};
+    for (const pair of asInventoryArray(values.duplicates)) {
+      const match = existingByNorm.get(normalizeMatchText(pair.existing_name));
+      if (match && pair.import_name) aiDupeByNorm.set(normalizeMatchText(pair.import_name), match);
+    }
+  }
+
+  const normalizeUomValue = (raw) => {
+    if (!raw) return '';
+    if (CATALOG_VALID_UOMS.includes(raw)) return raw;
+    const mapped = uomMap[raw];
+    return CATALOG_VALID_UOMS.includes(mapped) ? mapped : '';
+  };
+
+  const items = [];
+  for (const [name, itemRows] of grouped) {
+    const first = itemRows[0];
+    const warnings = [];
+
+    const rawUom = valueOf(first, 'unit_of_measure');
+    const uom = normalizeUomValue(rawUom);
+    if (rawUom && !uom) warnings.push(`Unit "${rawUom}" is not supported and could not be translated — defaults to EA.`);
+    if (!rawUom) warnings.push('No unit of measure in the file — defaults to EA.');
+
+    const rawCategory = valueOf(first, 'category');
+    let category = rawCategory;
+    if (rawCategory && !categoryNames.includes(rawCategory)) {
+      const mapped = String(categoryMap[rawCategory] || '').trim();
+      if (mapped && categoryNames.includes(mapped)) {
+        category = mapped;
+        warnings.push(`Category "${rawCategory}" matched to your existing "${mapped}".`);
+      } else {
+        warnings.push(`"${rawCategory}" is a new subcategory.`);
+      }
+    }
+
+    const purchaseOptions = [];
+    for (const row of itemRows) {
+      const vendorName = valueOf(row, 'vendor_name');
+      if (!vendorName) continue;
+      purchaseOptions.push({
+        vendor_name: vendorName,
+        vendor_email: valueOf(row, 'vendor_email'),
+        product_name: valueOf(row, 'product_name') || name,
+        product_code: valueOf(row, 'product_code') || valueOf(row, 'sku'),
+        pack_size: valueOf(row, 'pack_size'),
+        unit_cost: toNumber(valueOf(row, 'unit_cost')),
+        unit_of_measure: normalizeUomValue(valueOf(row, 'unit_of_measure')) || uom || 'EA',
+        inner_pack_units: toNumber(valueOf(row, 'inner_pack_units'), null),
+        inner_pack_name: valueOf(row, 'inner_pack_name'),
+        packs_per_case: toNumber(valueOf(row, 'packs_per_case'), null),
+      });
+    }
+    if (!purchaseOptions.length) warnings.push('No vendor found in the file — the item will have no purchase options.');
+    if (purchaseOptions.some((option) => !option.unit_cost)) warnings.push('One or more purchase options have no unit cost.');
+
+    const costs = purchaseOptions.map((option) => option.unit_cost).filter((cost) => cost > 0);
+    const match = existingByNorm.get(normalizeMatchText(name)) || aiDupeByNorm.get(normalizeMatchText(name));
+    const isExact = !!existingByNorm.get(normalizeMatchText(name));
+    const status = match ? (isExact ? 'duplicate' : 'possible_duplicate') : 'new';
+
+    items.push({
+      name,
+      sku: valueOf(first, 'sku'),
+      category,
+      unit_of_measure: uom || 'EA',
+      unit_cost: costs.length ? Math.min(...costs) : toNumber(valueOf(first, 'unit_cost')),
+      description: valueOf(first, 'description'),
+      is_commissary_item: toBool(valueOf(first, 'is_commissary_item'), false),
+      commissary_price: toNumber(valueOf(first, 'commissary_price'), null),
+      is_active: toBool(valueOf(first, 'is_active'), true),
+      purchase_options: purchaseOptions,
+      status,
+      match_item_id: match?.id || null,
+      match_item_name: match?.name || null,
+      warnings,
+      default_action: status === 'new' ? 'create' : 'skip',
+    });
+  }
+
+  const mappedColumns = new Set(Object.values(columnMap).filter(Boolean));
+  return {
+    success: true,
+    ai_source: 'openai',
+    model,
+    column_map: columnMap,
+    unmapped_columns: headers.filter((header) => !mappedColumns.has(header)),
+    rows_total: rows.length,
+    rows_skipped: rowsSkipped,
+    stats: {
+      new: items.filter((item) => item.status === 'new').length,
+      duplicates: items.filter((item) => item.status === 'duplicate').length,
+      possible_duplicates: items.filter((item) => item.status === 'possible_duplicate').length,
+    },
+    items,
+  };
+}
+
+async function aiCommitCatalogImport(client, user, body) {
+  const companyId = user.company_id;
+  const decisions = asInventoryArray(body.items);
+  const actionable = decisions.filter((decision) => decision?.item?.name && (decision.action === 'create' || decision.action === 'merge'));
+
+  const [vendors, existingItems] = await Promise.all([
+    fetchCompanyRows(client, 'inventory_vendors', companyId),
+    fetchCompanyRows(client, 'inventory_items', companyId),
+  ]);
+  const vendorByName = new Map(vendors.map((vendor) => [String(vendor.name || '').toLowerCase(), vendor]));
+  const itemById = new Map(existingItems.map((item) => [item.id, item]));
+  const itemByNorm = new Map(existingItems.map((item) => [normalizeMatchText(item.name), item]));
+
+  const results = {
+    created: 0,
+    merged: 0,
+    skipped: decisions.length - actionable.length,
+    vendors_created: 0,
+    errors: [],
+  };
+
+  for (const decision of actionable) {
+    const raw = decision.item;
+    const name = cleanShortText(raw.name, 200);
+    try {
+      const purchaseOptions = [];
+      for (const option of asInventoryArray(raw.purchase_options)) {
+        const vendorName = cleanShortText(option.vendor_name, 120);
+        if (!vendorName) continue;
+        let vendor = vendorByName.get(vendorName.toLowerCase());
+        if (!vendor) {
+          vendor = await createRecord(client, 'inventory_vendors', {
+            company_id: companyId,
+            name: vendorName,
+            email: cleanShortText(option.vendor_email, 200),
+            is_active: true,
+            notes: 'Auto-created during AI catalog import',
+          });
+          vendorByName.set(vendorName.toLowerCase(), vendor);
+          results.vendors_created += 1;
+        }
+        purchaseOptions.push({
+          vendor_id: vendor.id,
+          vendor_name: vendor.name,
+          product_name: cleanShortText(option.product_name, 200) || name,
+          product_code: cleanShortText(option.product_code, 120),
+          pack_size: cleanShortText(option.pack_size, 120),
+          unit_cost: toNumber(option.unit_cost),
+          unit_of_measure: CATALOG_VALID_UOMS.includes(option.unit_of_measure) ? option.unit_of_measure : (raw.unit_of_measure || 'EA'),
+          inner_pack_units: toNumber(option.inner_pack_units, null),
+          inner_pack_name: cleanShortText(option.inner_pack_name, 120) || null,
+          packs_per_case: toNumber(option.packs_per_case, null),
+          is_preferred: purchaseOptions.length === 0,
+          location_ids: null,
+          notes: '',
+        });
+      }
+
+      const costs = purchaseOptions.map((option) => option.unit_cost).filter((cost) => cost > 0);
+      const itemData = {
+        company_id: companyId,
+        name,
+        sku: cleanShortText(raw.sku, 120),
+        category: cleanShortText(raw.category, 120),
+        unit_of_measure: CATALOG_VALID_UOMS.includes(raw.unit_of_measure) ? raw.unit_of_measure : 'EA',
+        unit_cost: costs.length ? Math.min(...costs) : toNumber(raw.unit_cost),
+        is_commissary_item: !!raw.is_commissary_item,
+        commissary_price: toNumber(raw.commissary_price, null),
+        description: cleanShortText(raw.description, 500),
+        is_active: raw.is_active !== false,
+        purchase_options: purchaseOptions,
+      };
+
+      if (decision.action === 'merge') {
+        const target = itemById.get(raw.match_item_id) || itemByNorm.get(normalizeMatchText(name));
+        if (!target) throw new Error('No existing item found to merge into');
+        const targetOptions = target.purchase_options || [];
+        const existingVendorNames = new Set(targetOptions.map((option) => String(option.vendor_name || '').toLowerCase()));
+        const newOptions = purchaseOptions
+          .filter((option) => !existingVendorNames.has(String(option.vendor_name || '').toLowerCase()))
+          .map((option) => ({ ...option, is_preferred: targetOptions.length === 0 && option.is_preferred }));
+        // Merging only adds purchase options and fills blanks — it never
+        // overwrites data already on the existing item.
+        await updateRecord(client, 'inventory_items', target.id, companyId, {
+          purchase_options: [...targetOptions, ...newOptions],
+          sku: target.sku || itemData.sku,
+          category: target.category || itemData.category,
+          unit_of_measure: target.unit_of_measure || itemData.unit_of_measure,
+          description: target.description || itemData.description,
+        });
+        results.merged += 1;
+      } else {
+        if (itemByNorm.has(normalizeMatchText(name))) {
+          throw new Error('an item with this name already exists — merge or skip it instead');
+        }
+        const created = await createRecord(client, 'inventory_items', itemData);
+        itemByNorm.set(normalizeMatchText(name), created);
+        results.created += 1;
+      }
+    } catch (error) {
+      results.errors.push(`${name || 'row'}: ${error.message}`);
+    }
+  }
+
+  return { success: true, results };
+}
+
 async function fulfillCommissaryOrder(client, user, body) {
   const companyId = user.company_id;
   const order = await getRecord(client, 'inventory_orders', body.order_id, companyId);
@@ -1603,43 +2160,112 @@ async function scrapeProductImage(body) {
   }
 }
 
-async function createDailySnapshot(client, user) {
-  const companyId = user.company_id;
-  const snapshotDay = new Date();
-  snapshotDay.setDate(snapshotDay.getDate() - 1);
-  const date = snapshotDay.toISOString().slice(0, 10);
+const DEFAULT_SNAPSHOT_TIMEZONE = 'UTC';
+// Local hours 0-5 count as "just after end of day": the hourly cron snapshots
+// yesterday during this window, so a missed midnight run self-heals.
+const SNAPSHOT_CATCHUP_WINDOW_HOURS = 6;
+
+function zonedDateParts(date, timeZone) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      hour12: false,
+    }).formatToParts(date);
+    const get = (type) => parts.find((part) => part.type === type)?.value;
+    return {
+      date: `${get('year')}-${get('month')}-${get('day')}`,
+      hour: Number(get('hour')) % 24,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function previousLocalDate(localDate) {
+  const [year, month, day] = localDate.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
+async function snapshotCompanyLocations(client, companyId, { onlyDuringCatchupWindow = false, now = new Date() } = {}) {
   const [locations, settings, items, stock] = await Promise.all([
     fetchCompanyRows(client, 'locations', companyId),
     fetchCompanyRows(client, 'inventory_location_settings', companyId),
     fetchCompanyRows(client, 'inventory_items', companyId),
     fetchCompanyRows(client, 'inventory_location_stock', companyId),
   ]);
+
+  const activeItems = items.filter((row) => row.is_active !== false);
   let created = 0;
+
   for (const location of locations.filter((row) => row.is_active !== false)) {
-    for (const item of items.filter((row) => row.is_active !== false)) {
-      const existing = await client
-        .from('inventory_snapshots')
-        .select('id')
-        .eq('snapshot_date', date)
-        .eq('location_id', location.id)
-        .eq('item_id', item.id)
-        .maybeSingle();
-      if (existing.error) throw existing.error;
-      if (existing.data) continue;
-      const stockRow = stock.find((row) => row.location_id === location.id && row.item_id === item.id);
-      const unitCost = inventorySnapshotUnitCost(item, location, settings);
-      await createRecord(client, 'inventory_snapshots', {
-        company_id: companyId,
-        snapshot_date: date,
-        location_id: location.id,
-        item_id: item.id,
-        quantity_on_hand: Number(stockRow?.on_hand_quantity || 0),
-        unit_cost: unitCost,
+    const zone = location.timezone || DEFAULT_SNAPSHOT_TIMEZONE;
+    const local = zonedDateParts(now, zone) || zonedDateParts(now, DEFAULT_SNAPSHOT_TIMEZONE);
+    if (onlyDuringCatchupWindow && local.hour >= SNAPSHOT_CATCHUP_WINDOW_HOURS) continue;
+    const date = previousLocalDate(local.date);
+
+    const { data: existingRows, error: existingError } = await client
+      .from('inventory_snapshots')
+      .select('item_id')
+      .eq('snapshot_date', date)
+      .eq('location_id', location.id);
+    if (existingError) throw existingError;
+    const existing = new Set((existingRows || []).map((row) => row.item_id));
+
+    const rows = activeItems
+      .filter((item) => !existing.has(item.id))
+      .map((item) => {
+        const stockRow = stock.find((row) => row.location_id === location.id && row.item_id === item.id);
+        return {
+          company_id: companyId,
+          snapshot_date: date,
+          location_id: location.id,
+          item_id: item.id,
+          quantity_on_hand: Number(stockRow?.on_hand_quantity || 0),
+          unit_cost: inventorySnapshotUnitCost(item, location, settings),
+        };
       });
-      created += 1;
+
+    if (rows.length) {
+      const { error: insertError } = await client.from('inventory_snapshots').insert(rows);
+      if (insertError) throw insertError;
+      created += rows.length;
     }
   }
+
+  return created;
+}
+
+async function createDailySnapshot(client, user) {
+  const created = await snapshotCompanyLocations(client, user.company_id);
   return { success: true, created };
+}
+
+export async function runDailySnapshots(client) {
+  const { data: companies, error } = await client
+    .from('companies')
+    .select('id, enabled_features')
+    .eq('is_active', true);
+  if (error) throw error;
+
+  const results = {};
+  for (const company of companies || []) {
+    const features = Array.isArray(company.enabled_features) ? company.enabled_features : [];
+    if (!features.includes('inventory')) continue;
+    try {
+      results[company.id] = await snapshotCompanyLocations(client, company.id, {
+        onlyDuringCatchupWindow: true,
+      });
+    } catch (companyError) {
+      results[company.id] = `error: ${companyError.message}`;
+    }
+  }
+  return { success: true, results };
 }
 
 async function manageProductGroups(client, user, body) {
@@ -1865,6 +2491,15 @@ export async function handleInventoryFunction(name, req, client, user, body) {
 
     case 'inventoryReviewOrderBeforeSend':
       return reviewOrderBeforeSend(client, companyId, body);
+
+    case 'inventoryReviewCatalog':
+      return reviewCatalog(client, companyId);
+
+    case 'inventoryAiPrepareCatalogImport':
+      return aiPrepareCatalogImport(client, user, body);
+
+    case 'inventoryAiCommitCatalogImport':
+      return aiCommitCatalogImport(client, user, body);
 
     case 'inventoryCalculateSmartParsAfterCount':
       return calculateSmartParsAfterCount(client, companyId, body);

@@ -3,6 +3,12 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
+  "crons": [
+    {
+      "path": "/api/functions/inventoryRunDailySnapshots",
+      "schedule": "5 * * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/((?!api/.*|@.*|__vite.*|src/.*|node_modules/.*|assets/.*|.*\\..*).*)",

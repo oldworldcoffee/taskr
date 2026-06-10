@@ -1,6 +1,13 @@
-import { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import { useState, useEffect, useMemo } from 'react';
 import { enrichLocationsWithInventorySettings } from '@/lib/inventoryLocations';
+import {
+  useInventoryLocationSettings,
+  useInventorySnapshots,
+  useLocations,
+  useRecentOrders,
+  useStockLevels,
+  useValueItems,
+} from '@/hooks/useInventoryData';
 import { getInventoryItemValue, getInventorySnapshotValue } from '@/lib/inventoryValue';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { DollarSign, Package, TrendingDown, TrendingUp, Calendar, MapPin } from 'lucide-react';
@@ -10,32 +17,36 @@ import StatCard from '@/components/ui/StatCard';
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444'];
 
 export default function Reports() {
-  const [locations, setLocations] = useState([]);
-  const [items, setItems] = useState([]);
-  const [locInv, setLocInv] = useState([]);
-  const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [snapshotDate, setSnapshotDate] = useState('');
   const [selectedLocationId, setSelectedLocationId] = useState('all');
-  const [snapshotData, setSnapshotData] = useState([]);
   const [dateRangeStart, setDateRangeStart] = useState('');
   const [dateRangeEnd, setDateRangeEnd] = useState('');
 
+  const locationsQuery = useLocations();
+  const settingsQuery = useInventoryLocationSettings();
+  const itemsQuery = useValueItems();
+  const stockQuery = useStockLevels();
+  const ordersQuery = useRecentOrders(100);
+  const snapshotsQuery = useInventorySnapshots(snapshotDate);
+
+  const loading =
+    locationsQuery.isLoading ||
+    settingsQuery.isLoading ||
+    itemsQuery.isLoading ||
+    stockQuery.isLoading ||
+    ordersQuery.isLoading;
+
+  const locations = useMemo(
+    () => enrichLocationsWithInventorySettings(locationsQuery.data || [], settingsQuery.data || []),
+    [locationsQuery.data, settingsQuery.data]
+  );
+  const items = itemsQuery.data || [];
+  const locInv = stockQuery.data || [];
+  const orders = ordersQuery.data || [];
+  const snapshotData = snapshotsQuery.data || [];
+
   useEffect(() => {
-    Promise.all([
-      base44.entities.Location.list(),
-      base44.entities.InventoryLocationSetting.list(),
-      base44.entities.InventoryItem.list(),
-      base44.entities.LocationInventory.list(),
-      base44.entities.Order.list('-created_date', 100),
-    ]).then(([locs, settings, itms, linv, ords]) => {
-      setLocations(enrichLocationsWithInventorySettings(locs, settings));
-      setItems(itms);
-      setLocInv(linv);
-      setOrders(ords);
-      setLoading(false);
-    });
     // Set default date to today
     const today = new Date().toISOString().split('T')[0];
     setSnapshotDate(today);
@@ -44,17 +55,6 @@ export default function Reports() {
     setDateRangeStart(thirtyDaysAgo);
     setDateRangeEnd(today);
   }, []);
-
-  useEffect(() => {
-    if (snapshotDate) {
-      // Load snapshot data for selected date
-      base44.entities.InventorySnapshot.filter({
-        snapshot_date: snapshotDate
-      }).then(snapshots => {
-        setSnapshotData(snapshots);
-      });
-    }
-  }, [snapshotDate]);
 
   const categories = [...new Set(items.map(i => i.category).filter(Boolean))];
 
