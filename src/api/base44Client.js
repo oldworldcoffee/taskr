@@ -631,18 +631,25 @@ async function invokeFunction(name, payload = {}) {
 
   const contentType = response.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) {
+    const responseText = await response.text().catch(() => '');
     const fallback = await localFunctionFallback(name, body);
     if (fallback) return { data: fallback };
-    if (isLocalDevHost()) {
-      const route = `/api/functions/${name}`;
-      const message = name === 'extractInvoiceImage'
-        ? 'Local invoice AI route is not active. Stop and restart npm run dev, then retry AI.'
-        : `Local function route ${route} is not active. Stop and restart npm run dev.`;
-      console.error(`${message} ${route} returned ${contentType || 'no content type'} instead of JSON.`);
+    const route = `/api/functions/${name}`;
+    const responsePreview = responseText.replace(/\s+/g, ' ').trim().slice(0, 500);
+    if (name === 'extractInvoiceImage') {
+      const message = [
+        `Invoice AI route returned ${contentType || 'no content type'} instead of JSON`,
+        `(HTTP ${response.status})`,
+        responsePreview ? `Response started with: ${responsePreview}` : '',
+        isLocalDevHost() ? 'Stop and restart npm run dev, then retry AI.' : '',
+      ].filter(Boolean).join('. ');
+      console.error(`${message} Route: ${route}`);
       throw new Error(message);
     }
-    if (name === 'extractInvoiceImage') {
-      throw new Error('Local invoice AI route is not active. Stop and restart npm run dev, then retry AI.');
+    if (isLocalDevHost()) {
+      const message = `Local function route ${route} returned ${contentType || 'no content type'} instead of JSON. Stop and restart npm run dev.`;
+      console.error(`${message} Response started with: ${responsePreview || '(empty response)'}`);
+      throw new Error(message);
     }
     throw new Error(`Function ${name} did not return JSON`);
   }

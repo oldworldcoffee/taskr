@@ -18,6 +18,7 @@ import { toast } from 'sonner';
 const UOM_OPTIONS = ['EA', 'fl-oz', 'oz', 'ml', 'L', 'Qt', 'gal', 'g', 'gr', 'kg', 'lb'];
 const INVOICE_EXTRACTION_TIMEOUT_MS = 90 * 1000;
 const PROCESSING_STALE_MS = 2 * 60 * 1000;
+const INVOICE_WARNING_STORAGE_KEY = 'taskr.invoiceExtractionWarnings';
 
 const EMPTY_QUICK_ADD = { name: '', category: '', unit_of_measure: 'EA', unit_cost: '' };
 const EMPTY_PURCHASE_OPTION = {
@@ -69,6 +70,25 @@ function withTimeout(promise, timeoutMs, message) {
   return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timeoutId));
 }
 
+function readStoredInvoiceWarnings() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(INVOICE_WARNING_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredInvoiceWarnings(warnings) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(INVOICE_WARNING_STORAGE_KEY, JSON.stringify(warnings));
+}
+
+function errorMessage(error, fallback) {
+  return String(error?.message || error || fallback || '').trim().slice(0, 1200);
+}
+
 function normalizeMatchText(value) {
   return String(value || '')
     .toLowerCase()
@@ -78,11 +98,143 @@ function normalizeMatchText(value) {
     .trim();
 }
 
+function normalizeCode(value) {
+  return normalizeMatchText(value).replace(/\s+/g, '');
+}
+
+function lineCodeValues(row = {}) {
+  return [
+    row.vendor_sku,
+    row.vendor_item_number,
+    row.vendor_item_no,
+    row.item_number,
+    row.item_no,
+    row.item_num,
+    row.item_code,
+    row.product_code,
+    row.product_number,
+    row.product_no,
+    row.supplier_item_number,
+    row.supplier_item_no,
+    row.supplier_sku,
+    row.vendor_code,
+    row.catalog_number,
+    row.catalog_no,
+    row.code,
+    row.sku,
+    row.upc,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function optionCodeValues(option = {}) {
+  return [
+    option.product_code,
+    option.vendor_sku,
+    option.vendor_item_number,
+    option.vendor_item_no,
+    option.item_number,
+    option.item_no,
+    option.item_code,
+    option.product_number,
+    option.product_no,
+    option.supplier_item_number,
+    option.supplier_item_no,
+    option.supplier_sku,
+    option.vendor_code,
+    option.catalog_number,
+    option.catalog_no,
+    option.code,
+    option.sku,
+    option.upc,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function firstLineCode(row = {}) {
+  return lineCodeValues(row)[0] || '';
+}
+
+const VENDOR_ENTITY_WORDS = new Set([
+  'the',
+  'inc',
+  'incorporated',
+  'llc',
+  'ltd',
+  'limited',
+  'corp',
+  'corporation',
+  'company',
+  'co',
+  'llp',
+  'lp',
+]);
+
+function normalizeVendorText(value) {
+  return normalizeMatchText(value)
+    .split(' ')
+    .filter((word) => word && !VENDOR_ENTITY_WORDS.has(word))
+    .join(' ');
+}
+
+function vendorNameValues(vendor = {}) {
+  const aliases = Array.isArray(vendor.aliases) ? vendor.aliases : [];
+  return [
+    vendor.name,
+    vendor.legal_name,
+    vendor.display_name,
+    vendor.dba,
+    vendor.dba_name,
+    ...aliases,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function vendorMatchScore(candidate, vendorName) {
+  const candidateText = normalizeVendorText(candidate);
+  const vendorText = normalizeVendorText(vendorName);
+  if (!candidateText || !vendorText) return 0;
+  if (candidateText === vendorText) return 100;
+
+  const shorterLength = Math.min(candidateText.length, vendorText.length);
+  if (shorterLength >= 6 && (candidateText.includes(vendorText) || vendorText.includes(candidateText))) {
+    return 94;
+  }
+
+  const candidateWords = new Set(candidateText.split(' ').filter((word) => word.length > 1));
+  const vendorWords = vendorText.split(' ').filter((word) => word.length > 1);
+  if (!candidateWords.size || !vendorWords.length) return 0;
+
+  const shared = vendorWords.filter((word) => candidateWords.has(word));
+  const vendorCoverage = shared.length / vendorWords.length;
+  const candidateCoverage = shared.length / candidateWords.size;
+  if (shared.length >= 2 && vendorCoverage >= 0.67 && candidateCoverage >= 0.4) {
+    return 82 + Math.round(Math.min(vendorCoverage, candidateCoverage) * 10);
+  }
+
+  return 0;
+}
+
+function findVendorByName(vendors = [], candidate) {
+  const candidateText = String(candidate || '').trim();
+  if (!candidateText) return null;
+
+  let best = null;
+  for (const vendor of vendors) {
+    if (vendor.is_active === false) continue;
+    for (const name of vendorNameValues(vendor)) {
+      const score = vendorMatchScore(candidateText, name);
+      if (score > (best?.score || 0)) {
+        best = { vendor, score };
+      }
+    }
+  }
+
+  return best?.score >= 82 ? best.vendor : null;
+}
+
 function purchaseOptionMatchesLine(option = {}, row = {}) {
-  const rowCode = normalizeMatchText(row.vendor_sku || row.vendor_item_number || row.product_code || row.sku);
-  const optionCode = normalizeMatchText(option.product_code || option.vendor_sku || option.sku);
-  if (rowCode && optionCode && rowCode === optionCode) return true;
-  if (rowCode) return false;
+  const rowCodes = lineCodeValues(row).map(normalizeCode).filter(Boolean);
+  const optionCodes = optionCodeValues(option).map(normalizeCode).filter(Boolean);
+  if (rowCodes.length && optionCodes.length && optionCodes.some((code) => rowCodes.includes(code))) return true;
+  if (rowCodes.length) return false;
 
   const rowName = normalizeMatchText(row.item_name);
   const optionName = normalizeMatchText(option.product_name || option.name);
@@ -94,7 +246,7 @@ function shouldSuggestPurchaseOption(row, item) {
   if (!row?.item_id || !item) return false;
   if (row.purchase_option_added) return false;
   if ((item.purchase_options || []).some((option) => purchaseOptionMatchesLine(option, row))) return false;
-  return Boolean(row.vendor_sku || row.item_name);
+  return Boolean(firstLineCode(row) || row.item_name);
 }
 
 function normalizeInvoiceUom(value) {
@@ -184,18 +336,17 @@ function parseInvoicePackSize(row = {}, item = {}) {
 
 function buildPurchaseOptionFromLine(row = {}, item = {}, invoice = {}, vendors = []) {
   const vendorName = String(invoice.vendor_name || '').trim();
-  const matchedVendor = vendorName
-    ? vendors.find(v => String(v.name || '').trim().toLowerCase() === vendorName.toLowerCase())
-    : null;
+  const matchedVendor = findVendorByName(vendors, vendorName);
+  const resolvedVendorName = matchedVendor?.name || vendorName;
   const packDefaults = parseInvoicePackSize(row, item);
   const unitCost = parseFloat(row.unit_cost) || 0;
 
   return {
     ...EMPTY_PURCHASE_OPTION,
     vendor_id: matchedVendor?.id || '',
-    vendor_name: vendorName,
+    vendor_name: resolvedVendorName,
     product_name: row.item_name || item.name || '',
-    product_code: row.vendor_sku || '',
+    product_code: firstLineCode(row),
     unit_cost: unitCost ? unitCost.toString() : '',
     unit_of_measure: packDefaults.unit_of_measure || normalizeInvoiceUom(row.unit_of_measure) || item.unit_of_measure || '',
     inner_pack_uom: packDefaults.inner_pack_uom || '',
@@ -248,6 +399,9 @@ function itemSearchText(item) {
       option.product_name,
       option.product_code,
       option.vendor_sku,
+      option.vendor_item_number,
+      option.item_code,
+      option.supplier_item_number,
       option.unit_of_measure,
       option.inner_pack_name,
       option.inner_pack_uom,
@@ -389,7 +543,92 @@ export default function Invoices() {
   const [retryingInvoiceId, setRetryingInvoiceId] = useState(null);
   const [uploadError, setUploadError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [invoiceWarnings, setInvoiceWarnings] = useState(readStoredInvoiceWarnings);
   const fileRef = useRef();
+
+  const rememberInvoiceWarning = (invoiceId, message) => {
+    const warning = errorMessage(message);
+    if (!invoiceId || !warning) return;
+    setInvoiceWarnings(prev => {
+      const next = { ...prev, [invoiceId]: warning };
+      writeStoredInvoiceWarnings(next);
+      return next;
+    });
+  };
+
+  const clearInvoiceWarning = (invoiceId) => {
+    if (!invoiceId) return;
+    setInvoiceWarnings(prev => {
+      if (!prev[invoiceId]) return prev;
+      const next = { ...prev };
+      delete next[invoiceId];
+      writeStoredInvoiceWarnings(next);
+      return next;
+    });
+  };
+
+  const invoiceWarningFor = (invoice) => invoice?.extraction_warning || invoiceWarnings[invoice?.id] || '';
+
+  const resolveReviewVendorName = (invoice, reviewRows = []) => {
+    const scores = new Map();
+    const addVendorCandidate = (name) => {
+      const rawName = String(name || '').trim();
+      if (!rawName) return;
+      const matchedVendor = findVendorByName(vendors, rawName);
+      const resolvedName = matchedVendor?.name || rawName;
+      const key = normalizeVendorText(resolvedName);
+      if (!key) return;
+      const current = scores.get(key) || { name: resolvedName, score: 0 };
+      current.score += 1;
+      scores.set(key, current);
+    };
+
+    for (const row of reviewRows) {
+      addVendorCandidate(row.purchase_option_vendor_name);
+      const item = items.find(i => i.id === row.item_id);
+      if (!item) continue;
+      const matchedOption = (item.purchase_options || []).find((option) => purchaseOptionMatchesLine(option, row));
+      addVendorCandidate(matchedOption?.vendor_name);
+    }
+
+    const optionVendor = [...scores.values()].sort((a, b) => b.score - a.score)[0];
+    if (optionVendor?.name) return optionVendor.name;
+
+    const matchedInvoiceVendor = findVendorByName(vendors, invoice.vendor_name);
+    return matchedInvoiceVendor?.name || String(invoice.vendor_name || '').trim();
+  };
+
+  const prepareReviewInvoice = (invoice) => {
+    if (!invoice || !items.length) return invoice;
+    const extractedItems = (invoice.extracted_items || []).map((row) => {
+      const item = items.find(i => i.id === row.item_id);
+      if (!item) {
+        return {
+          ...row,
+          purchase_option_missing: false,
+          purchase_option_matched: false,
+        };
+      }
+
+      const matchedOption = (item.purchase_options || []).find((option) => purchaseOptionMatchesLine(option, row));
+      const purchaseOptionMatched = Boolean(matchedOption);
+      return {
+        ...row,
+        matched: true,
+        purchase_option_matched: purchaseOptionMatched || row.purchase_option_added === true,
+        purchase_option_missing: shouldSuggestPurchaseOption(row, item),
+        purchase_option_vendor_id: matchedOption?.vendor_id || row.purchase_option_vendor_id || null,
+        purchase_option_vendor_name: matchedOption?.vendor_name || row.purchase_option_vendor_name || '',
+      };
+    });
+
+    return {
+      ...invoice,
+      extraction_warning: invoiceWarningFor(invoice),
+      vendor_name: resolveReviewVendorName(invoice, extractedItems),
+      extracted_items: extractedItems,
+    };
+  };
 
   const load = () => {
     setLoading(true);
@@ -475,7 +714,7 @@ export default function Invoices() {
       extractionWarning = result.warning || '';
     } catch (extractionError) {
       console.error('Invoice extraction failed:', extractionError);
-      extractionWarning = extractionError.message || 'The image uploaded, but automatic parsing failed. You can add lines manually in review.';
+      extractionWarning = errorMessage(extractionError, 'The image uploaded, but automatic parsing failed. You can add lines manually in review.');
     }
 
     const extractedItems = result.items || [];
@@ -490,7 +729,7 @@ export default function Invoices() {
 
     await base44.entities.Invoice.update(invoice.id, patch);
     return {
-      invoice: { ...invoice, ...patch },
+      invoice: { ...invoice, ...patch, extraction_warning: extractionWarning },
       extractedItems,
       extractionWarning,
     };
@@ -539,21 +778,26 @@ export default function Invoices() {
       const { extractedItems, extractionWarning } = await extractInvoiceToReview(invoice, fileUrl);
       await load();
       if (extractionWarning) {
-        toast.warning(extractionWarning);
+        rememberInvoiceWarning(invoice.id, extractionWarning);
+        toast.warning(extractionWarning, { duration: 15000 });
       } else if (extractedItems.length === 0) {
+        clearInvoiceWarning(invoice.id);
         toast.warning('Invoice is ready for review, but no line items were found.');
       } else {
+        clearInvoiceWarning(invoice.id);
         toast.success('Invoice is ready for review.');
       }
     } catch (error) {
       console.error('Invoice extraction save failed:', error);
+      const message = errorMessage(error, 'The invoice uploaded, but the extracted data could not be saved.');
+      rememberInvoiceWarning(invoice.id, message);
       try {
         await base44.entities.Invoice.update(invoice.id, { status: 'pending_review' });
         await load();
       } catch (statusError) {
         console.error('Failed to move invoice out of processing:', statusError);
       }
-      toast.error('The invoice uploaded, but the extracted data could not be saved.');
+      toast.error(message, { duration: 20000 });
     } finally {
       setUploading(false);
       setExtracting(false);
@@ -622,30 +866,36 @@ export default function Invoices() {
 
     setRetryingInvoiceId(invoice.id);
     try {
+      clearInvoiceWarning(invoice.id);
       await base44.entities.Invoice.update(invoice.id, { status: 'processing' });
       await load();
       const { invoice: reviewedInvoice, extractedItems, extractionWarning } = await extractInvoiceToReview(invoice, fileUrl);
       await load();
-      setReviewDialog({
+      setReviewDialog(prepareReviewInvoice({
         ...reviewedInvoice,
         extraction_warning: extractionWarning,
-      });
+      }));
       if (extractionWarning) {
-        toast.warning(extractionWarning);
+        rememberInvoiceWarning(invoice.id, extractionWarning);
+        toast.warning(extractionWarning, { duration: 15000 });
       } else if (extractedItems.length === 0) {
+        clearInvoiceWarning(invoice.id);
         toast.warning('Invoice is ready for review, but no line items were found.');
       } else {
+        clearInvoiceWarning(invoice.id);
         toast.success('Invoice extraction finished.');
       }
     } catch (error) {
       console.error('Invoice retry failed:', error);
+      const message = errorMessage(error, 'AI retry failed. You can review the invoice manually.');
+      rememberInvoiceWarning(invoice.id, message);
       try {
         await base44.entities.Invoice.update(invoice.id, { status: 'pending_review' });
         await load();
       } catch (statusError) {
         console.error('Failed to unlock invoice after retry failure:', statusError);
       }
-      toast.error(error.message || 'AI retry failed. You can review the invoice manually.');
+      toast.error(message, { duration: 20000 });
     } finally {
       setRetryingInvoiceId(null);
     }
@@ -660,11 +910,11 @@ export default function Invoices() {
     try {
       await base44.entities.Invoice.update(invoice.id, patch);
       await load();
-      setReviewDialog({
+      setReviewDialog(prepareReviewInvoice({
         ...invoice,
         ...patch,
         extraction_warning: 'AI processing did not finish. Add lines manually, correct the details, or retry extraction from the invoice list.',
-      });
+      }));
     } catch (error) {
       toast.error(error.message || 'Failed to open invoice for manual review');
     }
@@ -817,9 +1067,8 @@ export default function Invoices() {
     setSavingQuickAdd(true);
     try {
       const vendorName = String(reviewDialog.vendor_name || '').trim();
-      const matchedVendor = vendorName
-        ? vendors.find(v => String(v.name || '').trim().toLowerCase() === vendorName.toLowerCase())
-        : null;
+      const matchedVendor = findVendorByName(vendors, vendorName);
+      const resolvedVendorName = matchedVendor?.name || vendorName;
       const formUnitCost = parseFloat(quickAddForm.unit_cost);
       const scannedUnitCost = parseFloat(row.unit_cost);
       const unitCost = Number.isFinite(formUnitCost)
@@ -831,7 +1080,7 @@ export default function Invoices() {
             ...buildPurchaseOptionFromLine(row, draftItem, reviewDialog, vendors),
             unit_cost: unitCost,
             vendor_id: matchedVendor?.id || '',
-            vendor_name: vendorName,
+            vendor_name: resolvedVendorName,
             is_preferred: true,
           }
         : null;
@@ -916,6 +1165,7 @@ export default function Invoices() {
         }
       }
       await load();
+      clearInvoiceWarning(reviewDialog.id);
       setReviewDialog(null);
     } catch (error) {
       toast.error(error.message || 'Failed to confirm invoice');
@@ -927,6 +1177,7 @@ export default function Invoices() {
   const rejectInvoice = async () => {
     await base44.entities.Invoice.update(reviewDialog.id, { status: 'rejected' });
     await load();
+    clearInvoiceWarning(reviewDialog.id);
     setReviewDialog(null);
   };
 
@@ -990,8 +1241,16 @@ export default function Invoices() {
                 <div><span className="text-muted-foreground block">Total</span><span className="font-semibold text-green-700">${(inv.total_amount || 0).toFixed(2)}</span></div>
                 <div><span className="text-muted-foreground block">Items</span><span className="font-medium">{inv.extracted_items?.length || 0}</span></div>
               </div>
+              {invoiceWarningFor(inv) && (
+                <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                    <span className="break-words">AI scan issue: {invoiceWarningFor(inv)}</span>
+                  </div>
+                </div>
+              )}
               {inv.status === 'pending_review' && (
-                <Button size="sm" className="w-full h-9" onClick={() => setReviewDialog(inv)}>
+                <Button size="sm" className="w-full h-9" onClick={() => setReviewDialog(prepareReviewInvoice(inv))}>
                   <Eye className="w-4 h-4 mr-1" />Review Invoice
                 </Button>
               )}
@@ -1036,10 +1295,18 @@ export default function Invoices() {
                   <td className="px-4 py-3 text-muted-foreground font-mono">{inv.invoice_number || '—'}</td>
                   <td className="px-4 py-3 font-medium">${(inv.total_amount || 0).toFixed(2)}</td>
                   <td className="px-4 py-3 text-muted-foreground">{inv.extracted_items?.length || 0}</td>
-                  <td className="px-4 py-3"><StatusBadge status={inv.status} /></td>
+                  <td className="px-4 py-3">
+                    <StatusBadge status={inv.status} />
+                    {invoiceWarningFor(inv) && (
+                      <div className="mt-1 flex max-w-xs items-start gap-1 text-xs text-red-700">
+                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                        <span className="break-words">AI scan issue: {invoiceWarningFor(inv)}</span>
+                      </div>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     {inv.status === 'pending_review' && (
-                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setReviewDialog(inv)}>
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setReviewDialog(prepareReviewInvoice(inv))}>
                         Review
                       </Button>
                     )}
@@ -1243,9 +1510,9 @@ export default function Invoices() {
                           <td className="px-3 py-2">
                             <div className="space-y-1">
                               <p className="text-xs text-muted-foreground">{row.item_name}</p>
-                              {(row.vendor_sku || row.pack_size) && (
+                              {(firstLineCode(row) || row.pack_size) && (
                                 <p className="text-[11px] text-muted-foreground">
-                                  {[row.vendor_sku ? `Item # ${row.vendor_sku}` : '', row.pack_size].filter(Boolean).join(' · ')}
+                                  {[firstLineCode(row) ? `Item # ${firstLineCode(row)}` : '', row.pack_size].filter(Boolean).join(' · ')}
                                 </p>
                               )}
                               {!row.item_id && (
