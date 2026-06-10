@@ -164,6 +164,18 @@ const AuthenticatedApp = () => {
               <Route path="settings" element={<InventorySettings />} />
             </Route>
           </Route>
+          <Route path="/dashboard/roastery" element={<RoasteryLayout />}>
+            <Route index element={<RoasteryDashboard />} />
+            <Route path="inventory" element={<RoasteryInventory />} />
+            <Route path="coffee-library" element={<RoasteryCoffeeLibrary />} />
+            <Route path="warehouses" element={<RoasteryWarehouses />} />
+            <Route path="release-schedule" element={<RoasteryReleaseSchedule />} />
+            <Route path="pricing" element={<RoasteryPricingCalculator />} />
+            <Route path="invoices" element={<RoasteryInvoices />} />
+            <Route path="reports" element={<RoasteryReports />} />
+            <Route path="data-tools" element={<RoasteryDataTools />} />
+            <Route path="settings" element={<RoasterySettings />} />
+          </Route>
         </Route>
       </Route>
 
