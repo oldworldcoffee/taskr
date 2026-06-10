@@ -183,7 +183,7 @@ function NavGroup({
 
 function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, unreadForum, markChatSeen, markForumSeen }) {
   const role = user?.role;
-  const inventoryEnabled = company?.enabled_features?.includes("inventory") && ["admin", "manager"].includes(role);
+  const inventoryEnabled = company?.enabled_features?.includes("inventory") && ["admin", "manager", "super_admin"].includes(role);
   const visibleTeamHubItems = teamHubItems.filter((item) => canSeeItem(item, role));
   const visiblePrimaryItems = primaryItems.filter((item) => canSeeItem(item, role));
   const isItemActive = (item) => item.exact ? isExact(item.path) : isActive(item.path);

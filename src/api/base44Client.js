@@ -289,6 +289,312 @@ async function currentProfile() {
   return ensureProfile(user);
 }
 
+function isLocalDevHost() {
+  return Boolean(import.meta.env.DEV);
+}
+
+function withTrialStatus(company) {
+  if (!company) return company;
+  const trialExpired =
+    company.subscription_tier === 'trial' &&
+    company.trial_end_date &&
+    new Date(company.trial_end_date) < new Date(new Date().toISOString().slice(0, 10));
+  return { ...company, trial_expired: Boolean(trialExpired) };
+}
+
+function trialDates(days = 15) {
+  const now = new Date();
+  const end = new Date(now);
+  end.setDate(end.getDate() + Number(days || 15));
+  return {
+    trial_start_date: now.toISOString().slice(0, 10),
+    trial_end_date: end.toISOString().slice(0, 10),
+  };
+}
+
+async function requireLocalSuperAdmin() {
+  const profile = await currentProfile();
+  if (profile?.role !== 'super_admin') {
+    const error = new Error('Forbidden: Super admin access required');
+    error.status = 403;
+    throw error;
+  }
+  return profile;
+}
+
+async function countRows(table, applyFilters = (query) => query) {
+  const query = applyFilters(supabase.from(table).select('id', { count: 'exact', head: true }));
+  const { count, error } = await query;
+  raise(error);
+  return count || 0;
+}
+
+async function localCompanyCounts(companyId) {
+  const [user_count, location_count] = await Promise.all([
+    countRows('users', (query) => query.eq('company_id', companyId)),
+    countRows('locations', (query) => query.eq('company_id', companyId)),
+  ]);
+  return { user_count, location_count };
+}
+
+async function localDefaultTrialDays() {
+  const { data, error } = await supabase
+    .from('platform_settings')
+    .select('trial_days')
+    .eq('id', 'default')
+    .maybeSingle();
+  raise(error);
+  return data?.trial_days || 15;
+}
+
+async function localPlatformSettings() {
+  const { data, error } = await supabase
+    .from('platform_settings')
+    .select('*')
+    .eq('id', 'default')
+    .maybeSingle();
+  raise(error);
+  return {
+    pricing_tiers: {
+      '1_location': 49,
+      '5_locations': 149,
+      unlimited: 299,
+      ...(data?.pricing_tiers || {}),
+    },
+    trial_days: data?.trial_days || 15,
+  };
+}
+
+async function upsertLocalPlatformSettings(patch) {
+  const { data: current, error: readError } = await supabase
+    .from('platform_settings')
+    .select('*')
+    .eq('id', 'default')
+    .maybeSingle();
+  raise(readError);
+
+  const { data, error } = await supabase
+    .from('platform_settings')
+    .upsert({ id: 'default', ...(current || {}), ...patch }, { onConflict: 'id' })
+    .select('*')
+    .single();
+  raise(error);
+  return data;
+}
+
+async function localFunctionFallback(name, body = {}) {
+  if (!isLocalDevHost()) return null;
+
+  switch (name) {
+    case 'getCompanyInfo': {
+      const user = await currentProfile();
+      if (!user?.company_id) return { success: false, error: 'No company associated with your account' };
+
+      const { data: company, error } = await supabase
+        .from('companies')
+        .select('*')
+        .eq('id', user.company_id)
+        .single();
+      raise(error);
+
+      return {
+        success: true,
+        company: {
+          ...withTrialStatus(company),
+          ...(await localCompanyCounts(company.id)),
+        },
+      };
+    }
+
+    case 'getAllCompanies': {
+      await requireLocalSuperAdmin();
+      const { data, error } = await supabase
+        .from('companies')
+        .select('*')
+        .order('created_date', { ascending: false });
+      raise(error);
+
+      const companies = await Promise.all(
+        (data || []).map(async (company) => ({
+          ...withTrialStatus(company),
+          ...(await localCompanyCounts(company.id)),
+        }))
+      );
+      return { companies };
+    }
+
+    case 'getSuperUsers': {
+      await requireLocalSuperAdmin();
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('role', 'super_admin')
+        .order('full_name');
+      raise(error);
+      return { users: data || [] };
+    }
+
+    case 'getSuperAdminStats': {
+      await requireLocalSuperAdmin();
+      const today = new Date().toISOString().slice(0, 10);
+      const [
+        companies,
+        users,
+        locations,
+        activeSubscriptions,
+        activeTrials,
+        expiredTrials,
+      ] = await Promise.all([
+        countRows('companies'),
+        countRows('users'),
+        countRows('locations'),
+        countRows('companies', (query) => query.eq('is_active', true).neq('subscription_tier', 'trial')),
+        countRows('companies', (query) =>
+          query.eq('is_active', true).eq('subscription_tier', 'trial').gte('trial_end_date', today)
+        ),
+        countRows('companies', (query) => query.eq('subscription_tier', 'trial').lt('trial_end_date', today)),
+      ]);
+      return {
+        companies,
+        users,
+        locations,
+        total_companies: companies,
+        total_users: users,
+        total_locations: locations,
+        active_subscriptions: activeSubscriptions,
+        active_trials: activeTrials,
+        expired_trials: expiredTrials,
+      };
+    }
+
+    case 'getPlatformSettings': {
+      await requireLocalSuperAdmin();
+      return { settings: await localPlatformSettings() };
+    }
+
+    case 'createCompany': {
+      const user = await requireLocalSuperAdmin();
+      const email = body.email?.trim();
+      const companyName = body.companyName?.trim();
+      if (!email || !companyName) throw new Error('Company name and admin email are required');
+      const days = await localDefaultTrialDays();
+      const { data: company, error } = await supabase
+        .from('companies')
+        .insert({
+          name: companyName,
+          admin_email: email,
+          subscription_tier: 'trial',
+          is_active: true,
+          ...trialDates(days),
+        })
+        .select('*')
+        .single();
+      raise(error);
+
+      await supabase.from('pending_invites').insert({
+        email,
+        name: body.name || '',
+        role: 'admin',
+        company_id: company.id,
+        invited_by: user.email,
+      });
+      return { success: true, message: 'Company created', company };
+    }
+
+    case 'manageCompanyTrial': {
+      await requireLocalSuperAdmin();
+      const patch = {};
+      if (body.action === 'extend_trial') {
+        const { data: company, error } = await supabase
+          .from('companies')
+          .select('*')
+          .eq('id', body.companyId)
+          .single();
+        raise(error);
+        const base = company.trial_end_date ? new Date(company.trial_end_date) : new Date();
+        base.setDate(base.getDate() + Number(body.days || 15));
+        patch.trial_end_date = base.toISOString().slice(0, 10);
+        patch.subscription_tier = 'trial';
+      } else if (body.action === 'apply_discount') {
+        const expires = new Date();
+        expires.setMonth(expires.getMonth() + Number(body.discountMonths || 3));
+        patch.discount_coupon = body.coupon || null;
+        patch.discount_expires_at = expires.toISOString().slice(0, 10);
+      } else if (body.action === 'remove_discount') {
+        patch.discount_coupon = null;
+        patch.discount_expires_at = null;
+      } else if (body.action === 'change_tier') {
+        patch.subscription_tier = body.tier;
+      } else if (body.action === 'manage_features') {
+        const features = Array.isArray(body.enabledFeatures) ? body.enabledFeatures : [];
+        patch.enabled_features = [...new Set(features.filter((feature) => feature === 'inventory'))];
+      }
+      const { error } = await supabase.from('companies').update(patch).eq('id', body.companyId);
+      raise(error);
+      return { success: true, message: 'Company updated' };
+    }
+
+    case 'updateCompanySubscription': {
+      await requireLocalSuperAdmin();
+      const { error } = await supabase
+        .from('companies')
+        .update({ subscription_tier: body.tier })
+        .eq('id', body.companyId);
+      raise(error);
+      return { success: true };
+    }
+
+    case 'addSuperUser': {
+      const user = await requireLocalSuperAdmin();
+      const email = body.email?.trim();
+      if (!email) throw new Error('Email is required');
+      const { data, error } = await supabase
+        .from('users')
+        .update({ role: 'super_admin', full_name: body.name || body.fullName || undefined })
+        .ilike('email', email)
+        .select('*');
+      raise(error);
+
+      if (!data?.length) {
+        await supabase.from('pending_invites').insert({
+          email,
+          name: body.name || body.fullName || '',
+          role: 'super_admin',
+          invited_by: user.email,
+        });
+      }
+      return { success: true };
+    }
+
+    case 'removeSuperUser': {
+      const user = await requireLocalSuperAdmin();
+      if (body.userId === user.id) throw new Error('You cannot remove your own super admin access');
+      const { error } = await supabase
+        .from('users')
+        .update({ role: 'employee' })
+        .eq('id', body.userId);
+      raise(error);
+      return { success: true };
+    }
+
+    case 'savePricingSettings': {
+      await requireLocalSuperAdmin();
+      return { success: true, settings: await upsertLocalPlatformSettings({ pricing_tiers: body.tiers || {} }) };
+    }
+
+    case 'saveTrialSettings': {
+      await requireLocalSuperAdmin();
+      return {
+        success: true,
+        settings: await upsertLocalPlatformSettings({ trial_days: Number(body.trialDays || 15) }),
+      };
+    }
+
+    default:
+      return null;
+  }
+}
+
 async function withDefaultCompany(entityName, record = {}) {
   const clean = sanitizeRecord(record);
   if (!COMPANY_SCOPED_ENTITIES.has(entityName) || clean.company_id) return clean;
@@ -305,19 +611,49 @@ async function invokeFunction(name, payload = {}) {
       ? payload.data
       : payload;
 
-  const response = await fetch(`/api/functions/${name}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(session?.access_token
-        ? { Authorization: `Bearer ${session.access_token}` }
-        : {}),
-    },
-    body: JSON.stringify(body || {}),
-  });
+  let response;
+  try {
+    response = await fetch(`/api/functions/${name}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(session?.access_token
+          ? { Authorization: `Bearer ${session.access_token}` }
+          : {}),
+      },
+      body: JSON.stringify(body || {}),
+    });
+  } catch (error) {
+    const fallback = await localFunctionFallback(name, body);
+    if (fallback) return { data: fallback };
+    throw error;
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    const fallback = await localFunctionFallback(name, body);
+    if (fallback) return { data: fallback };
+    if (isLocalDevHost()) {
+      const route = `/api/functions/${name}`;
+      const message = name === 'extractInvoiceImage'
+        ? 'Local invoice AI route is not active. Stop and restart npm run dev, then retry AI.'
+        : `Local function route ${route} is not active. Stop and restart npm run dev.`;
+      console.error(`${message} ${route} returned ${contentType || 'no content type'} instead of JSON.`);
+      throw new Error(message);
+    }
+    if (name === 'extractInvoiceImage') {
+      throw new Error('Local invoice AI route is not active. Stop and restart npm run dev, then retry AI.');
+    }
+    throw new Error(`Function ${name} did not return JSON`);
+  }
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    const fallback = response.status === 404 ? await localFunctionFallback(name, body) : null;
+    if (fallback) return { data: fallback };
+    if (isLocalDevHost() && name === 'extractInvoiceImage' && response.status === 404) {
+      throw new Error('Local invoice AI route was not found. Stop and restart npm run dev, then retry AI.');
+    }
     throw new Error(data.error || `Function ${name} failed`);
   }
 

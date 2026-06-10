@@ -501,8 +501,6 @@ export default function Invoices() {
 
     const locationId = selectedLoc;
     setUploadError('');
-    setUploadDialog(false);
-    resetFileInput();
     toast.info('Invoice upload started. You can leave this page and come back.');
 
     let invoice = null;
@@ -521,12 +519,16 @@ export default function Invoices() {
         total_amount: 0,
       });
       await load();
+      setUploadDialog(false);
+      resetFileInput();
+      toast.info('AI invoice extraction is running in the background.');
     } catch (error) {
       console.error('Invoice upload failed:', error);
       const message = error.message || 'Invoice upload failed. Please try again.';
       setUploadError(message);
       toast.error(message);
       setUploading(false);
+      resetFileInput();
       return;
     }
 
@@ -622,8 +624,12 @@ export default function Invoices() {
     try {
       await base44.entities.Invoice.update(invoice.id, { status: 'processing' });
       await load();
-      const { extractedItems, extractionWarning } = await extractInvoiceToReview(invoice, fileUrl);
+      const { invoice: reviewedInvoice, extractedItems, extractionWarning } = await extractInvoiceToReview(invoice, fileUrl);
       await load();
+      setReviewDialog({
+        ...reviewedInvoice,
+        extraction_warning: extractionWarning,
+      });
       if (extractionWarning) {
         toast.warning(extractionWarning);
       } else if (extractedItems.length === 0) {
@@ -1063,7 +1069,7 @@ export default function Invoices() {
       )}
 
       {/* Upload Dialog */}
-      <Dialog open={uploadDialog} onOpenChange={setUploadDialog}>
+      <Dialog open={uploadDialog} onOpenChange={(open) => { if (!scanBusy || open) setUploadDialog(open); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader><DialogTitle>Scan Invoice</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
@@ -1103,7 +1109,7 @@ export default function Invoices() {
               )}
             </div>
           </div>
-          <DialogFooter><Button variant="outline" onClick={() => setUploadDialog(false)}>Cancel</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setUploadDialog(false)} disabled={scanBusy}>Cancel</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

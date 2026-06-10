@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DollarSign, Calendar } from "lucide-react";
+import { AlertCircle, DollarSign, Calendar } from "lucide-react";
 import { toast } from "sonner";
 
 export default function SuperAdminSettings() {
@@ -21,7 +21,7 @@ export default function SuperAdminSettings() {
 
   const queryClient = useQueryClient();
 
-  const { data: settings, isLoading } = useQuery({
+  const { data: settings, isLoading, error } = useQuery({
     queryKey: ['platform-settings'],
     queryFn: async () => {
       const res = await base44.functions.invoke('getPlatformSettings', {});
@@ -75,6 +75,26 @@ export default function SuperAdminSettings() {
 
   if (isLoading) {
     return <div className="flex items-center justify-center h-64"><div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" /></div>;
+  }
+
+  if (error) {
+    return (
+      <div>
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold">Platform Settings</h1>
+          <p className="text-muted-foreground">Configure Stripe, pricing, and trial periods</p>
+        </div>
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="flex items-start gap-3 p-6 text-red-800">
+            <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
+            <div>
+              <h3 className="font-semibold">Could not load settings</h3>
+              <p className="mt-1 text-sm">{error.message}</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (

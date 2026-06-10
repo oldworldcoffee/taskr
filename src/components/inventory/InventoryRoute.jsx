@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 
 export default function InventoryRoute() {
   const { user } = useAuth();
-  const canUseRole = ["admin", "manager"].includes(user?.role);
+  const canUseRole = ["admin", "manager", "super_admin"].includes(user?.role);
 
   const { data: company, isLoading } = useQuery({
     queryKey: ["company-info"],
