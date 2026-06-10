@@ -22,6 +22,7 @@ import {
   isPublicInventoryFunction,
   runDailySnapshots,
 } from '../_lib/inventory.js';
+import { handleRoasteryFunction, isRoasteryFunction } from '../_lib/roastery.js';
 
 const CRON_FUNCTION_NAMES = new Set(['inventoryRunDailySnapshots', 'runDailySnapshots']);
 
@@ -255,6 +256,10 @@ async function createStripeCheckout(client, req, user, body) {
 async function handleFunction(name, req, client, user, body) {
   if (isInventoryFunction(name)) {
     return handleInventoryFunction(name, req, client, user, body);
+  }
+
+  if (isRoasteryFunction(name)) {
+    return handleRoasteryFunction(name, req, client, user, body);
   }
 
   switch (name) {
