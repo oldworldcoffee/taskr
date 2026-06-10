@@ -156,6 +156,16 @@ function entityClient(entityName) {
       return fromRow(data);
     },
 
+    async upsert(records) {
+      const rows = (Array.isArray(records) ? records : [records]).map(toRow);
+      const { data, error } = await supabase
+        .from(table)
+        .upsert(rows, { onConflict: 'id' })
+        .select('*');
+      raise(error);
+      return (data || []).map(fromRow);
+    },
+
     async update(id, record) {
       const payload = toRow(record);
       // Avoid wiping pricing data when an update doesn't touch dynamic fields.

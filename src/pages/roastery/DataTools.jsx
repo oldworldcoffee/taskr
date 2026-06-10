@@ -59,38 +59,42 @@ export default function DataTools() {
     setImportResult(null);
     setImportError(null);
 
-    const text = await file.text();
-    const snapshot = JSON.parse(text);
+    try {
+      const text = await file.text();
+      const snapshot = JSON.parse(text);
 
-    if (!snapshot.data) {
-      setImportError('Invalid export file — missing data block.');
-      setImporting(false);
-      return;
-    }
-
-    const results = {};
-    const errors = {};
-
-    for (const { key } of ENTITIES) {
-      const records = snapshot.data[key];
-      if (!records?.length) { results[key] = 0; continue; }
-
-      // Strip internal ids so new records are created; keep all other fields
-      const toInsert = records.map(({ id, created_date, updated_date, ...rest }) => ({
-        ...rest,
-        company_id: companyId, // always bind to current company
-      }));
-
-      let count = 0;
-      for (const record of toInsert) {
-        await roastery.entities[key].create(record);
-        count++;
+      if (!snapshot.data) {
+        setImportError('Invalid export file — missing data block.');
+        return;
       }
-      results[key] = count;
-    }
 
-    setImportResult(results);
-    setImporting(false);
+      const results = {};
+
+      for (const { key } of ENTITIES) {
+        const records = snapshot.data[key];
+        if (!records?.length) { results[key] = 0; continue; }
+
+        // Keep original ids so cross-entity references (green_coffee_id,
+        // category_slot_id, inventory_lot_id, ...) stay intact across
+        // environments. Drop only Base44 metadata fields that have no column
+        // in the Supabase schema.
+        const toUpsert = records.map(
+          ({ created_by, created_by_id, is_sample, ...rest }) => ({
+            ...rest,
+            company_id: companyId, // always bind to current company
+          })
+        );
+
+        const upserted = await roastery.entities[key].upsert(toUpsert);
+        results[key] = upserted.length;
+      }
+
+      setImportResult(results);
+    } catch (err) {
+      setImportError(err.message || 'Import failed.');
+    } finally {
+      setImporting(false);
+    }
   };
 
   const totalExportCount = ENTITIES.length;
@@ -141,12 +145,12 @@ export default function DataTools() {
             Import Data
           </CardTitle>
           <CardDescription>
-            Upload a previously exported JSON file. New records will be created — existing data is not deleted or overwritten.
+            Upload a previously exported JSON file. Records keep their original ids, so links between coffees, lots, rotations, and invoices are preserved.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="mb-4 p-3 rounded-md bg-amber-50 border border-amber-200 text-sm text-amber-800">
-            <strong>Note:</strong> Import creates new records alongside any existing data. To start fresh, clear the relevant module first.
+            <strong>Note:</strong> Import merges into existing data. Records with the same id as one in the file are overwritten with the imported version; everything else is left untouched.
           </div>
 
           <label className="cursor-pointer">
