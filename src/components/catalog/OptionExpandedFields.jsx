@@ -3,7 +3,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Trash2, Sparkles, MapPin, Check } from 'lucide-react';
 
-const UOM_OPTIONS = ['EA', 'fl-oz', 'oz', 'ml', 'L', 'Qt', 'gal', 'g', 'gr', 'kg', 'lb'];
+const UOM_OPTIONS = ['EA', 'fl-oz', 'ml', 'L', 'Pt', 'Qt', 'gal', 'oz', 'lb', 'g', 'kg'];
 
 export default function OptionExpandedFields({ opt, idx, form, vendors, locations, handleVendorChange, updateOption, scrapeProductImage, scrapingIdx, removeOption }) {
   return (

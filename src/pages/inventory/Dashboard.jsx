@@ -1,8 +1,16 @@
-import { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import { useMemo } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 import { enrichLocationsWithInventorySettings } from '@/lib/inventoryLocations';
 import { getInventoryItemValue } from '@/lib/inventoryValue';
+import {
+  useInventoryLocationSettings,
+  useLocations,
+  usePendingInvoices,
+  useRecentOrders,
+  useRecentTransfers,
+  useStockLevels,
+  useValueItems,
+} from '@/hooks/useInventoryData';
 import { DollarSign, ArrowLeftRight, AlertTriangle, FileText } from 'lucide-react';
 import StatCard from '@/components/ui/StatCard';
 import PageHeader from '@/components/layout/PageHeader';
@@ -13,42 +21,44 @@ import { useIsMobile } from '@/hooks/useIsMobile';
 export default function Dashboard() {
   const { canAccessLocation } = useAuth();
   const isMobile = useIsMobile();
-  const [locations, setLocations] = useState([]);
-  const [items, setItems] = useState([]);
-  const [locInv, setLocInv] = useState([]);
-  const [orders, setOrders] = useState([]);
-  const [transfers, setTransfers] = useState([]);
-  const [invoices, setInvoices] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState('');
 
-  useEffect(() => {
-    setLoading(true);
-    setLoadError('');
-    Promise.all([
-      base44.entities.Location.list().catch(() => []),
-      base44.entities.InventoryLocationSetting.list().catch(() => []),
-      base44.entities.InventoryItem.list().catch(() => []),
-      base44.entities.LocationInventory.list().catch(() => []),
-      base44.entities.Order.list('-created_date', 10).catch(() => []),
-      base44.entities.Transfer.list('-created_date', 10).catch(() => []),
-      base44.entities.Invoice.filter({ status: 'pending_review' }).catch(() => []),
-    ]).then(([locs, settings, itms, linv, ords, trans, invs]) => {
-      const enrichedLocs = enrichLocationsWithInventorySettings(Array.isArray(locs) ? locs : [], Array.isArray(settings) ? settings : []);
-      const filteredLocs = enrichedLocs.filter(l => canAccessLocation(l.id));
-      setLocations(filteredLocs);
-      setItems(Array.isArray(itms) ? itms : []);
-      setLocInv((Array.isArray(linv) ? linv : []).filter(li => canAccessLocation(li.location_id)));
-      setOrders(Array.isArray(ords) ? ords : []);
-      setTransfers(Array.isArray(trans) ? trans : []);
-      setInvoices(Array.isArray(invs) ? invs : []);
-      setLoading(false);
-    }).catch((error) => {
-      console.error('Failed to load inventory overview:', error);
-      setLoadError(error.message || 'Unable to load inventory overview.');
-      setLoading(false);
-    });
-  }, [canAccessLocation]);
+  const locationsQuery = useLocations();
+  const settingsQuery = useInventoryLocationSettings();
+  const itemsQuery = useValueItems();
+  const stockQuery = useStockLevels();
+  const ordersQuery = useRecentOrders(10);
+  const transfersQuery = useRecentTransfers(10);
+  const invoicesQuery = usePendingInvoices();
+
+  const queries = [
+    locationsQuery,
+    settingsQuery,
+    itemsQuery,
+    stockQuery,
+    ordersQuery,
+    transfersQuery,
+    invoicesQuery,
+  ];
+  const loading = queries.some((query) => query.isLoading);
+  const loadError = queries.find((query) => query.error)?.error?.message || '';
+
+  const items = itemsQuery.data || [];
+  const orders = ordersQuery.data || [];
+  const transfers = transfersQuery.data || [];
+  const invoices = invoicesQuery.data || [];
+
+  const locations = useMemo(() => {
+    const enriched = enrichLocationsWithInventorySettings(
+      locationsQuery.data || [],
+      settingsQuery.data || []
+    );
+    return enriched.filter((location) => canAccessLocation(location.id));
+  }, [locationsQuery.data, settingsQuery.data, canAccessLocation]);
+
+  const locInv = useMemo(
+    () => (stockQuery.data || []).filter((li) => canAccessLocation(li.location_id)),
+    [stockQuery.data, canAccessLocation]
+  );
 
   const totalValue = locInv.reduce((sum, li) => {
     const item = items.find(i => i.id === li.item_id);

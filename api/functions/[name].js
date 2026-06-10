@@ -20,7 +20,10 @@ import {
   handlePublicInventoryFunction,
   isInventoryFunction,
   isPublicInventoryFunction,
+  runDailySnapshots,
 } from '../_lib/inventory.js';
+
+const CRON_FUNCTION_NAMES = new Set(['inventoryRunDailySnapshots', 'runDailySnapshots']);
 
 const PRICE_ENV = {
   '1_location': 'STRIPE_PRICE_1_LOCATION',
@@ -82,6 +85,17 @@ function cleanOptionalMoney(value) {
     throw httpError(400, 'Cash drawer amount must be zero or greater');
   }
   return amount;
+}
+
+function cleanOptionalTimezone(value) {
+  const zone = String(value || '').trim();
+  if (!zone) return null;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: zone });
+    return zone;
+  } catch {
+    throw httpError(400, 'Invalid timezone');
+  }
 }
 
 function companyInvitePayload(user, body) {
@@ -346,6 +360,7 @@ async function handleFunction(name, req, client, user, body) {
           name: body.name,
           address: body.address || null,
           cash_drawer_amount: cleanOptionalMoney(body.cash_drawer_amount),
+          timezone: cleanOptionalTimezone(body.timezone),
           is_active: true,
         })
         .select('*')
@@ -724,10 +739,28 @@ async function handleFunction(name, req, client, user, body) {
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return sendJson(res, 200, {});
+
+  const name = Array.isArray(req.query.name) ? req.query.name[0] : req.query.name;
+
+  // Vercel Cron invokes this route with GET and `Authorization: Bearer ${CRON_SECRET}`.
+  if (CRON_FUNCTION_NAMES.has(name)) {
+    try {
+      const client = serviceClient();
+      const secret = process.env.CRON_SECRET;
+      const auth = req.headers.authorization || '';
+      if (!secret || auth !== `Bearer ${secret}`) {
+        return sendJson(res, 401, { error: 'Unauthorized' });
+      }
+      const result = await runDailySnapshots(client);
+      return sendJson(res, 200, result);
+    } catch (error) {
+      return sendJson(res, error.status || 500, { error: error.message || 'Server error' });
+    }
+  }
+
   if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' });
 
   try {
-    const name = Array.isArray(req.query.name) ? req.query.name[0] : req.query.name;
     const client = serviceClient();
     const body = await readJsonBody(req);
     if (isPublicInventoryFunction(name)) {

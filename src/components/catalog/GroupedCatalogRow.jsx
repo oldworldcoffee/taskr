@@ -198,7 +198,7 @@ export default function GroupedCatalogRow({
             (() => {
               const opt = getPreferredOption(firstItem);
               if (!opt) return '-';
-              const ppu = getPricePerUOM(opt, firstItem.unit_of_measure);
+              const ppu = getPricePerUOM(opt, firstItem.unit_of_measure, firstItem);
               if (!ppu) return '-';
               return (
                 <div className="text-xs">
@@ -324,7 +324,7 @@ export default function GroupedCatalogRow({
                         {(() => {
                           const opt = getPreferredOption(item);
                           if (!opt) return '-';
-                          const ppu = getPricePerUOM(opt, item.unit_of_measure);
+                          const ppu = getPricePerUOM(opt, item.unit_of_measure, item);
                           if (!ppu) return '-';
                           return (
                             <div className="text-xs">

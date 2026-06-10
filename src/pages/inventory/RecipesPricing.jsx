@@ -156,9 +156,18 @@ function AutoSaveStatus({ status, canSave }) {
   );
 }
 
-function StatusPill({ status }) {
-  const label = status === 'green' ? 'Green' : status === 'yellow' ? 'Yellow' : 'Red';
-  return <span className={`inline-flex px-2 py-0.5 rounded-full border text-xs font-semibold ${statusClasses(status)}`}>{label}</span>;
+function EditorPlaceholder({ label, onNew }) {
+  return (
+    <div className="border border-dashed border-border rounded-xl flex flex-col items-center justify-center gap-3 p-10 text-center min-h-[260px]">
+      <p className="text-sm text-muted-foreground">Select a {label} from the list, or create a new one.</p>
+      <Button variant="outline" className="gap-1" onClick={onNew}><Plus className="w-4 h-4" /> New {label}</Button>
+    </div>
+  );
+}
+
+function StatusPill({ status, label }) {
+  const fallback = status === 'green' ? 'Green' : status === 'yellow' ? 'Yellow' : 'Red';
+  return <span className={`inline-flex px-2 py-0.5 rounded-full border text-xs font-semibold ${statusClasses(status)}`}>{label || fallback}</span>;
 }
 
 function RecipeList({ records, selectedId, onSelect, onNew, emptyLabel }) {
@@ -908,11 +917,19 @@ function MenuEditor({ form, setForm, data, menuCategories, onDelete, onSetPricin
 
   const toggleSize = (sizeId) => {
     setForm((prev) => {
-      const fallbackIds = (selectedSizeSet?.sizes || []).map((size) => size.id);
-      const currentIds = Array.isArray(prev.selected_size_ids) ? prev.selected_size_ids : fallbackIds;
+      const allIds = (selectedSizeSet?.sizes || []).map((size) => size.id);
+      // An empty selection means "all sizes" (matching resolveMenuRecipe), so
+      // materialize the full list before removing the clicked size.
+      const currentIds = Array.isArray(prev.selected_size_ids) && prev.selected_size_ids.length
+        ? prev.selected_size_ids
+        : allIds;
       const nextIds = currentIds.includes(sizeId)
         ? currentIds.filter((id) => id !== sizeId)
         : [...currentIds, sizeId];
+      if (!nextIds.length) {
+        toast.error('Keep at least one size active.');
+        return prev;
+      }
       return { ...prev, selected_size_ids: nextIds };
     });
   };
@@ -1062,7 +1079,11 @@ function MenuEditor({ form, setForm, data, menuCategories, onDelete, onSetPricin
 
 function DrinkMenuOptions({ sizeSetId, sizeSets, selectedSizeSet, selectedSizeIds, sizes, packages, previewRows, selectSizeSet, toggleSize, updateSizePrice }) {
   const packageNameById = new Map(packages.map((pkg) => [pkg.id, pkg.name]));
-  const activeIds = Array.isArray(selectedSizeIds) ? selectedSizeIds : [];
+  // Empty selection means "all sizes" (matching resolveMenuRecipe), so show
+  // every size in the attached set as checked rather than none.
+  const activeIds = Array.isArray(selectedSizeIds) && selectedSizeIds.length
+    ? selectedSizeIds
+    : (selectedSizeSet?.sizes || []).map((size) => size.id);
 
   return (
     <Panel title="Drink Options">
@@ -1178,7 +1199,7 @@ function DrinkMenuOptions({ sizeSetId, sizeSets, selectedSizeSet, selectedSizeId
                     <p className="text-xs text-muted-foreground">Waste {money(previewRows[idx]?.wasteAdjustedCost)}</p>
                   </td>
                   <td className="px-3 py-2">{money(previewRows[idx]?.recommendedPrice)}</td>
-                  <td className="px-3 py-2"><StatusPill status={previewRows[idx]?.status || 'red'} /> <span className="ml-2 text-xs text-muted-foreground">{percent(previewRows[idx]?.actualMargin)}</span></td>
+                  <td className="px-3 py-2"><StatusPill status={previewRows[idx]?.status || 'red'} label={percent(previewRows[idx]?.actualMargin)} /></td>
                 </tr>
               ))}
               {sizes.length === 0 && (
@@ -1494,7 +1515,7 @@ function FoodMenuOptions({ form, setForm, size, result, data, updateSize }) {
             </div>
             <div>
               <Label>Margin</Label>
-              <div className="h-10 flex items-center gap-2"><StatusPill status={result?.status || 'red'} /><span className="text-xs text-muted-foreground">{percent(result?.actualMargin)}</span></div>
+              <div className="h-10 flex items-center"><StatusPill status={result?.status || 'red'} label={percent(result?.actualMargin)} /></div>
             </div>
           </div>
         </div>
@@ -1875,15 +1896,19 @@ export default function RecipesPricing() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [saving, setSaving] = useState(false);
-  const [sizeSetForm, setSizeSetForm] = useState(emptySizeSet());
-  const [packageForm, setPackageForm] = useState(emptyPackage());
-  const [prepForm, setPrepForm] = useState(emptyPrepRecipe());
-  const [choiceGroupForm, setChoiceGroupForm] = useState(emptyChoiceGroup());
-  const [modifierForm, setModifierForm] = useState(emptyRecipeModifier());
-  const [menuForm, setMenuForm] = useState(emptyMenuRecipe());
+  // Editors start with no record selected; the user picks an existing record
+  // or explicitly starts a new one.
+  const [sizeSetForm, setSizeSetForm] = useState(null);
+  const [packageForm, setPackageForm] = useState(null);
+  const [prepForm, setPrepForm] = useState(null);
+  const [choiceGroupForm, setChoiceGroupForm] = useState(null);
+  const [modifierForm, setModifierForm] = useState(null);
+  const [menuForm, setMenuForm] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [exploreRecipeId, setExploreRecipeId] = useState('');
   const [selectedModifierIds, setSelectedModifierIds] = useState([]);
+  const [exploreSelections, setExploreSelections] = useState({});
+  const [expandedIssueRecipeIds, setExpandedIssueRecipeIds] = useState([]);
   const [autoSaveStatus, setAutoSaveStatus] = useState({
     sizeSet: 'idle',
     package: 'idle',
@@ -2005,7 +2030,7 @@ export default function RecipesPricing() {
       autoSaveBaselinesRef.current[key] = signature;
       mergeSavedRecord(setRecords, saved);
       if (!form.id && saved?.id) {
-        setForm((current) => current.id ? current : { ...current, id: saved.id });
+        setForm((current) => !current || current.id ? current : { ...current, id: saved.id });
       }
       setAutoStatus(key, latestAutoSaveSignatureRef.current[key] === signature ? 'saved' : 'pending');
     } catch (error) {
@@ -2127,23 +2152,66 @@ export default function RecipesPricing() {
   const selectedExploreRecipe = menuRecipes.find((recipe) => recipe.id === exploreRecipeId) || menuRecipes[0] || null;
   const selectedExploreMatrixRecipe = selectedExploreRecipe ? recipeForPricingMatrix(selectedExploreRecipe, sizeSets) : null;
   const selectedExploreRecipeForPricing = selectedExploreMatrixRecipe
-    ? resolveMenuRecipe(selectedExploreMatrixRecipe, pricingContext, { includeAllSizes: true })
+    ? resolveMenuRecipe(selectedExploreMatrixRecipe, pricingContext)
     : null;
-  const scenarios = selectedExploreMatrixRecipe ? buildChoiceScenarios(selectedExploreMatrixRecipe, 80, pricingContext) : [];
+  const exploreChoiceGroups = (selectedExploreRecipeForPricing?.components || [])
+    .filter((component) => component.type === 'choice_group' && component.options?.length);
+  const exploreChoiceDefaults = Object.fromEntries(exploreChoiceGroups.map((choice) => {
+    const baseOption = choice.options.find((option) => option.is_base) || choice.options[0];
+    return [choice.id, baseOption?.id];
+  }));
+  const effectiveExploreSelections = { ...exploreChoiceDefaults, ...exploreSelections };
+  const exploreModifiers = selectedExploreRecipeForPricing?.modifiers || [];
+  const exploreVariationLabel = [
+    ...exploreChoiceGroups
+      .map((choice) => choice.options.find((option) => option.id === effectiveExploreSelections[choice.id])?.label)
+      .filter(Boolean),
+    ...exploreModifiers
+      .filter((modifier) => selectedModifierIds.includes(modifier.id))
+      .map((modifier) => modifier.name),
+  ].join(' + ') || 'Base';
+
   const pricingRows = menuRecipes.flatMap((recipe) => {
     const matrixRecipe = recipeForPricingMatrix(recipe, sizeSets);
-    return (resolveMenuRecipe(matrixRecipe, pricingContext, { includeAllSizes: true })?.sizes || []).map((size) => {
-      const result = calculateMenuSize(matrixRecipe, size, pricingContext, marginSettings, {}, [], { includeAllSizes: true });
+    return (resolveMenuRecipe(matrixRecipe, pricingContext)?.sizes || []).map((size) => {
+      const result = calculateMenuSize(matrixRecipe, size, pricingContext, marginSettings, {}, []);
       const snapshot = recipe.set_pricing?.[size.id];
       return { recipe: matrixRecipe, sourceRecipe: recipe, size, result, snapshot };
     });
   });
-  const offPricingRows = pricingRows.filter((row) => row.result.status !== 'green');
-  const yellowPricingCount = offPricingRows.filter((row) => row.result.status === 'yellow').length;
-  const redPricingCount = offPricingRows.filter((row) => row.result.status === 'red').length;
+
+  // Every choice-group combination, alone and with each modifier, for every
+  // offered size — grouped per recipe so the issues panel can collapse them.
+  const pricingIssuesByRecipe = useMemo(() => menuRecipes.map((recipe) => {
+    const matrixRecipe = recipeForPricingMatrix(recipe, sizeSets);
+    const resolved = resolveMenuRecipe(matrixRecipe, pricingContext);
+    const sizes = resolved?.sizes || [];
+    const scenarios = buildChoiceScenarios(matrixRecipe, 80, pricingContext);
+    const modifierChoices = [null, ...(resolved?.modifiers || [])];
+    const issues = [];
+    for (const scenario of scenarios) {
+      for (const modifier of modifierChoices) {
+        for (const size of sizes) {
+          const result = calculateMenuSize(matrixRecipe, size, pricingContext, marginSettings, scenario.selections, modifier ? [modifier.id] : []);
+          if (result.status === 'green') continue;
+          const label = [scenario.label === 'Base' ? '' : scenario.label, modifier?.name].filter(Boolean).join(' + ') || 'Base';
+          issues.push({
+            key: `${recipe.id}-${scenario.id}-${modifier?.id || 'none'}-${size.id}`,
+            label,
+            size,
+            result,
+          });
+        }
+      }
+    }
+    return { recipe: matrixRecipe, issues };
+  }).filter((entry) => entry.issues.length > 0), [menuRecipes, sizeSets, pricingContext, marginSettings]);
+
+  const yellowPricingCount = pricingIssuesByRecipe.reduce((sum, entry) => sum + entry.issues.filter((issue) => issue.result.status === 'yellow').length, 0);
+  const redPricingCount = pricingIssuesByRecipe.reduce((sum, entry) => sum + entry.issues.filter((issue) => issue.result.status === 'red').length, 0);
 
   useEffect(() => {
-    if (!companyId) return;
+    if (!companyId || !sizeSetForm) return;
     const payload = sanitizeSizeSet(sizeSetForm);
     const signature = stableSignature(payload);
     latestAutoSaveSignatureRef.current.sizeSet = signature;
@@ -2169,7 +2237,7 @@ export default function RecipesPricing() {
   }, [companyId, sizeSetForm]);
 
   useEffect(() => {
-    if (!companyId) return;
+    if (!companyId || !packageForm) return;
     const payload = sanitizePackage(packageForm);
     const signature = stableSignature(payload);
     latestAutoSaveSignatureRef.current.package = signature;
@@ -2195,7 +2263,7 @@ export default function RecipesPricing() {
   }, [companyId, packageForm]);
 
   useEffect(() => {
-    if (!companyId) return;
+    if (!companyId || !prepForm) return;
     const payload = sanitizePrepRecipe(prepForm);
     const signature = stableSignature(payload);
     latestAutoSaveSignatureRef.current.prep = signature;
@@ -2221,7 +2289,7 @@ export default function RecipesPricing() {
   }, [companyId, prepForm]);
 
   useEffect(() => {
-    if (!companyId) return;
+    if (!companyId || !choiceGroupForm) return;
     const payload = sanitizeChoiceGroup(choiceGroupForm);
     const signature = stableSignature(payload);
     latestAutoSaveSignatureRef.current.choiceGroup = signature;
@@ -2247,7 +2315,7 @@ export default function RecipesPricing() {
   }, [companyId, choiceGroupForm]);
 
   useEffect(() => {
-    if (!companyId) return;
+    if (!companyId || !modifierForm) return;
     const payload = sanitizeRecipeModifier(modifierForm);
     const signature = stableSignature(payload);
     latestAutoSaveSignatureRef.current.modifier = signature;
@@ -2273,7 +2341,7 @@ export default function RecipesPricing() {
   }, [companyId, modifierForm]);
 
   useEffect(() => {
-    if (!companyId) return;
+    if (!companyId || !menuForm) return;
     const payload = sanitizeMenuRecipe(menuForm, menuCategoryOptions);
     const signature = stableSignature(payload);
     latestAutoSaveSignatureRef.current.menu = signature;
@@ -2380,9 +2448,9 @@ export default function RecipesPricing() {
   const setMenuPricing = async (recipe) => {
     const set_pricing = {};
     const matrixRecipe = recipeForPricingMatrix(recipe, sizeSets);
-    const recipeForPricing = resolveMenuRecipe(matrixRecipe, pricingContext, { includeAllSizes: true });
+    const recipeForPricing = resolveMenuRecipe(matrixRecipe, pricingContext);
     for (const size of recipeForPricing?.sizes || []) {
-      const result = calculateMenuSize(matrixRecipe, size, pricingContext, marginSettings, {}, [], { includeAllSizes: true });
+      const result = calculateMenuSize(matrixRecipe, size, pricingContext, marginSettings, {}, []);
       set_pricing[size.id] = {
         menu_price: result.setPrice,
         cost: result.cost,
@@ -2397,7 +2465,7 @@ export default function RecipesPricing() {
     }
     const saved = await base44.entities.MenuRecipe.update(recipe.id, { set_pricing });
     toast.success('Menu pricing set');
-    setMenuForm((current) => current.id === saved.id ? { ...current, set_pricing: saved.set_pricing || set_pricing } : current);
+    setMenuForm((current) => current?.id === saved.id ? { ...current, set_pricing: saved.set_pricing || set_pricing } : current);
     mergeSavedRecord(setMenuRecipes, saved);
   };
 
@@ -2472,19 +2540,46 @@ export default function RecipesPricing() {
               </div>
             }
           >
-            {offPricingRows.length > 0 ? (
+            {pricingIssuesByRecipe.length > 0 ? (
               <div className="space-y-2">
-                {offPricingRows.map(({ recipe, size, result }) => (
-                  <div key={`${recipe.id}-${size.id}`} className={`border rounded-lg px-3 py-2 flex flex-wrap items-center justify-between gap-2 ${statusClasses(result.status)}`}>
-                    <div className="flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4" />
-                      <span className="text-sm font-medium">{recipe.name} - {size.name}</span>
-                      <span className="text-xs">Set {money(result.setPrice)} recommends {money(result.recommendedPrice)}</span>
-                      {result.gap > 0 && <span className="text-xs">Gap {money(result.gap)}</span>}
+                {pricingIssuesByRecipe.map(({ recipe, issues }) => {
+                  const expanded = expandedIssueRecipeIds.includes(recipe.id);
+                  const redCount = issues.filter((issue) => issue.result.status === 'red').length;
+                  const yellowCount = issues.length - redCount;
+                  return (
+                    <div key={recipe.id} className="border border-border rounded-lg overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedIssueRecipeIds((current) => expanded ? current.filter((id) => id !== recipe.id) : [...current, recipe.id])}
+                        className="w-full flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-left hover:bg-muted/40"
+                      >
+                        <span className="flex items-center gap-2 text-sm font-medium">
+                          <AlertTriangle className="w-4 h-4 text-amber-500" />
+                          Pricing issues with {recipe.name}
+                        </span>
+                        <span className="flex items-center gap-2 text-xs font-medium">
+                          {redCount > 0 && <span className="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-red-700">{redCount} red</span>}
+                          {yellowCount > 0 && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-amber-700">{yellowCount} yellow</span>}
+                          <ChevronsUpDown className="w-4 h-4 text-muted-foreground" />
+                        </span>
+                      </button>
+                      {expanded && (
+                        <div className="border-t border-border divide-y divide-border">
+                          {issues.map((issue) => (
+                            <div key={issue.key} className="px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+                              <span><span className="font-medium">{issue.label}</span> <span className="text-muted-foreground">— {issue.size.name}</span></span>
+                              <span className="flex items-center gap-2 text-xs">
+                                <span>Set {money(issue.result.setPrice)} recommends {money(issue.result.recommendedPrice)}</span>
+                                {issue.result.gap > 0 && <span className="text-red-600">Gap {money(issue.result.gap)}</span>}
+                                <StatusPill status={issue.result.status} label={percent(issue.result.actualMargin)} />
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    <StatusPill status={result.status} />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <div className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">All built menu pricing is green.</div>
@@ -2496,7 +2591,7 @@ export default function RecipesPricing() {
               <table className="w-full min-w-[980px] text-sm">
                 <thead className="bg-muted/30">
                   <tr>
-                    {['Recipe', 'Size', 'Live COGS', 'Waste COGS', 'Set Price', 'Recommended', 'Margin', 'Status', ''].map((heading) => (
+                    {['Recipe', 'Size', 'Live COGS', 'Waste COGS', 'Set Price', 'Recommended', 'Margin', ''].map((heading) => (
                       <th key={heading} className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">{heading}</th>
                     ))}
                   </tr>
@@ -2510,14 +2605,13 @@ export default function RecipesPricing() {
                       <td className="px-3 py-2">{money(result.wasteAdjustedCost)}</td>
                       <td className="px-3 py-2">{money(result.setPrice)}</td>
                       <td className="px-3 py-2 font-semibold">{money(result.recommendedPrice)}</td>
-                      <td className="px-3 py-2">{percent(result.actualMargin)}</td>
-                      <td className="px-3 py-2"><StatusPill status={result.status} /></td>
+                      <td className="px-3 py-2"><StatusPill status={result.status} label={percent(result.actualMargin)} /></td>
                       <td className="px-3 py-2 text-right">
                         <Button variant="outline" size="sm" className="h-8" onClick={() => setMenuPricing(recipe)}>Set Menu Pricing</Button>
                       </td>
                     </tr>
                   ))}
-                  {menuRecipes.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-muted-foreground">No menu recipes yet.</td></tr>}
+                  {menuRecipes.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-muted-foreground">No menu recipes yet.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -2526,28 +2620,71 @@ export default function RecipesPricing() {
           <Panel
             title="Choice Pricing Matrix"
             actions={
-              <select className="border border-input rounded-md px-3 py-2 bg-background text-sm" value={selectedExploreRecipe?.id || ''} onChange={(e) => { setExploreRecipeId(e.target.value); setSelectedModifierIds([]); }}>
-                {menuRecipes.map((recipe) => <option key={recipe.id} value={recipe.id}>{recipe.name}</option>)}
+              <select className="border border-input rounded-md px-3 py-2 bg-background text-sm" value={selectedExploreRecipe?.id || ''} onChange={(e) => { setExploreRecipeId(e.target.value); setSelectedModifierIds([]); setExploreSelections({}); }}>
+                {menuRecipes.map((recipe) => {
+                  const hasDuplicateName = menuRecipes.some((other) => other.id !== recipe.id && other.name === recipe.name);
+                  if (!hasDuplicateName) return <option key={recipe.id} value={recipe.id}>{recipe.name}</option>;
+                  const setLabel = recipe.size_set_id ? sizeSetName(sizeSets, recipe.size_set_id) : 'no size set';
+                  const countLabel = recipe.size_set_id && Array.isArray(recipe.selected_size_ids) && recipe.selected_size_ids.length
+                    ? `, ${recipe.selected_size_ids.length} sizes`
+                    : '';
+                  return <option key={recipe.id} value={recipe.id}>{`${recipe.name} — ${setLabel}${countLabel}`}</option>;
+                })}
               </select>
             }
           >
             {selectedExploreRecipe ? (
               <div className="space-y-4">
-                {(selectedExploreRecipeForPricing?.modifiers || []).length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {(selectedExploreRecipeForPricing?.modifiers || []).map((modifier) => {
-                      const checked = selectedModifierIds.includes(modifier.id);
-                      return (
-                        <button
-                          key={modifier.id}
-                          type="button"
-                          onClick={() => setSelectedModifierIds((current) => checked ? current.filter((id) => id !== modifier.id) : [...current, modifier.id])}
-                          className={`px-3 py-1.5 rounded-lg border text-sm ${checked ? 'bg-primary text-primary-foreground border-primary' : 'bg-card border-border hover:bg-muted/50'}`}
+                {(exploreChoiceGroups.length > 0 || exploreModifiers.length > 0) && (
+                  <div className="flex flex-wrap items-end gap-3">
+                    {exploreChoiceGroups.map((choice) => (
+                      <div key={choice.id} className="space-y-1">
+                        <Label className="text-xs">{choice.label}</Label>
+                        <select
+                          className="block border border-input rounded-md px-3 py-2 bg-background text-sm"
+                          value={effectiveExploreSelections[choice.id] || ''}
+                          onChange={(e) => setExploreSelections((current) => ({ ...current, [choice.id]: e.target.value }))}
                         >
-                          {modifier.name} {toNumber(modifier.upcharge) ? `+${money(modifier.upcharge)}` : ''}
-                        </button>
-                      );
-                    })}
+                          {choice.options.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.label}{toNumber(option.upcharge) ? ` (+${money(option.upcharge)})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                    {exploreModifiers.length > 0 && (
+                      <div className="space-y-1">
+                        <Label className="text-xs">Modifiers</Label>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button variant="outline" className="gap-2 font-normal">
+                              {selectedModifierIds.length ? `${selectedModifierIds.length} selected` : 'None'}
+                              <ChevronsUpDown className="w-3.5 h-3.5 text-muted-foreground" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent align="start" className="w-64 p-2">
+                            <div className="space-y-1">
+                              {exploreModifiers.map((modifier) => {
+                                const checked = selectedModifierIds.includes(modifier.id);
+                                return (
+                                  <label key={modifier.id} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      className="h-4 w-4 accent-primary"
+                                      checked={checked}
+                                      onChange={() => setSelectedModifierIds((current) => checked ? current.filter((id) => id !== modifier.id) : [...current, modifier.id])}
+                                    />
+                                    <span className="flex-1">{modifier.name}</span>
+                                    {toNumber(modifier.upcharge) > 0 && <span className="text-xs text-muted-foreground">+{money(modifier.upcharge)}</span>}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="overflow-x-auto">
@@ -2559,24 +2696,23 @@ export default function RecipesPricing() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
-                      {scenarios.map((scenario) => (
-                        <tr key={scenario.id}>
-                          <td className="px-3 py-3 font-medium">{scenario.label}</td>
-                          {(selectedExploreRecipeForPricing?.sizes || []).map((size) => {
-                            const result = calculateMenuSize(selectedExploreMatrixRecipe, size, pricingContext, marginSettings, scenario.selections, selectedModifierIds, { includeAllSizes: true });
-                            return (
-                              <td key={size.id} className="px-3 py-3 align-top">
-                                <div className="space-y-1">
-                                  <div className="flex items-center gap-2"><StatusPill status={result.status} /><span className="text-xs text-muted-foreground">{percent(result.actualMargin)}</span></div>
-                                  <p className="text-xs text-muted-foreground">COGS {money(result.wasteAdjustedCost)}</p>
-                                  <p className="text-xs font-semibold">Rec {money(result.recommendedPrice)}</p>
-                                  {result.gap > 0 && <p className="text-xs text-red-600">Gap {money(result.gap)}</p>}
-                                </div>
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
+                      <tr>
+                        <td className="px-3 py-3 font-medium">{exploreVariationLabel}</td>
+                        {(selectedExploreRecipeForPricing?.sizes || []).map((size) => {
+                          const result = calculateMenuSize(selectedExploreMatrixRecipe, size, pricingContext, marginSettings, effectiveExploreSelections, selectedModifierIds);
+                          return (
+                            <td key={size.id} className="px-3 py-3 align-top">
+                              <div className="space-y-1">
+                                <div className="flex items-center"><StatusPill status={result.status} label={percent(result.actualMargin)} /></div>
+                                <p className="text-xs font-semibold">Set {money(result.setPrice)}</p>
+                                <p className="text-xs text-muted-foreground">COGS {money(result.wasteAdjustedCost)}</p>
+                                <p className="text-xs font-semibold">Rec {money(result.recommendedPrice)}</p>
+                                {result.gap > 0 && <p className="text-xs text-red-600">Gap {money(result.gap)}</p>}
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -2590,92 +2726,116 @@ export default function RecipesPricing() {
 
       {activeTab === 'sizes' && (
         <div className="grid lg:grid-cols-[280px_1fr] gap-4">
-          <RecipeList records={sizeSets} selectedId={sizeSetForm.id} onSelect={selectSizeSet} onNew={newSizeSet} emptyLabel="No size sets yet." />
-          <SizeSetEditor
-            form={sizeSetForm}
-            setForm={setSizeSetForm}
-            packages={packages}
-            onDelete={() => requestDelete('RecipeSizeSet', sizeSetForm, () => setSizeSetForm(emptySizeSet()), 'Size set')}
-            saving={saving}
-            autosaveStatus={autoSaveStatus.sizeSet}
-          />
+          <RecipeList records={sizeSets} selectedId={sizeSetForm?.id} onSelect={selectSizeSet} onNew={newSizeSet} emptyLabel="No size sets yet." />
+          {sizeSetForm ? (
+            <SizeSetEditor
+              form={sizeSetForm}
+              setForm={setSizeSetForm}
+              packages={packages}
+              onDelete={() => requestDelete('RecipeSizeSet', sizeSetForm, () => setSizeSetForm(null), 'Size set')}
+              saving={saving}
+              autosaveStatus={autoSaveStatus.sizeSet}
+            />
+          ) : (
+            <EditorPlaceholder label="size set" onNew={newSizeSet} />
+          )}
         </div>
       )}
 
       {activeTab === 'packages' && (
         <div className="grid lg:grid-cols-[280px_1fr] gap-4">
-          <RecipeList records={packages} selectedId={packageForm.id} onSelect={selectPackage} onNew={newPackage} emptyLabel="No packages yet." />
-          <PackageEditor
-            form={packageForm}
-            setForm={setPackageForm}
-            items={items}
-            onDelete={() => requestDelete('RecipePackage', packageForm, () => setPackageForm(emptyPackage()), 'Package')}
-            saving={saving}
-            pricingContext={pricingContext}
-            autosaveStatus={autoSaveStatus.package}
-          />
+          <RecipeList records={packages} selectedId={packageForm?.id} onSelect={selectPackage} onNew={newPackage} emptyLabel="No packages yet." />
+          {packageForm ? (
+            <PackageEditor
+              form={packageForm}
+              setForm={setPackageForm}
+              items={items}
+              onDelete={() => requestDelete('RecipePackage', packageForm, () => setPackageForm(null), 'Package')}
+              saving={saving}
+              pricingContext={pricingContext}
+              autosaveStatus={autoSaveStatus.package}
+            />
+          ) : (
+            <EditorPlaceholder label="package" onNew={newPackage} />
+          )}
         </div>
       )}
 
       {activeTab === 'prep' && (
         <div className="grid lg:grid-cols-[280px_1fr] gap-4">
-          <RecipeList records={prepRecipes} selectedId={prepForm.id} onSelect={selectPrepRecipe} onNew={newPrepRecipe} emptyLabel="No prep recipes yet." />
-          <PrepEditor
-            form={prepForm}
-            setForm={setPrepForm}
-            items={items}
-            onDelete={() => requestDelete('PrepRecipe', prepForm, () => setPrepForm(emptyPrepRecipe()), 'Prep recipe')}
-            saving={saving}
-            pricingContext={pricingContext}
-            autosaveStatus={autoSaveStatus.prep}
-          />
+          <RecipeList records={prepRecipes} selectedId={prepForm?.id} onSelect={selectPrepRecipe} onNew={newPrepRecipe} emptyLabel="No prep recipes yet." />
+          {prepForm ? (
+            <PrepEditor
+              form={prepForm}
+              setForm={setPrepForm}
+              items={items}
+              onDelete={() => requestDelete('PrepRecipe', prepForm, () => setPrepForm(null), 'Prep recipe')}
+              saving={saving}
+              pricingContext={pricingContext}
+              autosaveStatus={autoSaveStatus.prep}
+            />
+          ) : (
+            <EditorPlaceholder label="prep recipe" onNew={newPrepRecipe} />
+          )}
         </div>
       )}
 
       {activeTab === 'choiceGroups' && (
         <div className="grid lg:grid-cols-[280px_1fr] gap-4">
-          <RecipeList records={choiceGroups} selectedId={choiceGroupForm.id} onSelect={selectChoiceGroup} onNew={newChoiceGroup} emptyLabel="No choice groups yet." />
-          <ChoiceGroupEditor
-            form={choiceGroupForm}
-            setForm={setChoiceGroupForm}
-            data={data}
-            pricingContext={pricingContext}
-            onDelete={() => requestDelete('RecipeChoiceGroup', choiceGroupForm, () => setChoiceGroupForm(emptyChoiceGroup()), 'Choice group')}
-            saving={saving}
-            autosaveStatus={autoSaveStatus.choiceGroup}
-          />
+          <RecipeList records={choiceGroups} selectedId={choiceGroupForm?.id} onSelect={selectChoiceGroup} onNew={newChoiceGroup} emptyLabel="No choice groups yet." />
+          {choiceGroupForm ? (
+            <ChoiceGroupEditor
+              form={choiceGroupForm}
+              setForm={setChoiceGroupForm}
+              data={data}
+              pricingContext={pricingContext}
+              onDelete={() => requestDelete('RecipeChoiceGroup', choiceGroupForm, () => setChoiceGroupForm(null), 'Choice group')}
+              saving={saving}
+              autosaveStatus={autoSaveStatus.choiceGroup}
+            />
+          ) : (
+            <EditorPlaceholder label="choice group" onNew={newChoiceGroup} />
+          )}
         </div>
       )}
 
       {activeTab === 'modifiers' && (
         <div className="grid lg:grid-cols-[280px_1fr] gap-4">
-          <RecipeList records={recipeModifiers} selectedId={modifierForm.id} onSelect={selectModifier} onNew={newModifier} emptyLabel="No modifiers yet." />
-          <RecipeModifierEditor
-            form={modifierForm}
-            setForm={setModifierForm}
-            data={data}
-            onDelete={() => requestDelete('RecipeModifier', modifierForm, () => setModifierForm(emptyRecipeModifier()), 'Modifier')}
-            saving={saving}
-            autosaveStatus={autoSaveStatus.modifier}
-          />
+          <RecipeList records={recipeModifiers} selectedId={modifierForm?.id} onSelect={selectModifier} onNew={newModifier} emptyLabel="No modifiers yet." />
+          {modifierForm ? (
+            <RecipeModifierEditor
+              form={modifierForm}
+              setForm={setModifierForm}
+              data={data}
+              onDelete={() => requestDelete('RecipeModifier', modifierForm, () => setModifierForm(null), 'Modifier')}
+              saving={saving}
+              autosaveStatus={autoSaveStatus.modifier}
+            />
+          ) : (
+            <EditorPlaceholder label="modifier" onNew={newModifier} />
+          )}
         </div>
       )}
 
       {activeTab === 'menu' && (
         <div className="grid lg:grid-cols-[280px_1fr] gap-4">
-          <RecipeList records={menuRecipes} selectedId={menuForm.id} onSelect={selectMenuRecipe} onNew={newMenuRecipe} emptyLabel="No menu recipes yet." />
-          <MenuEditor
-            form={menuForm}
-            setForm={setMenuForm}
-            data={data}
-            menuCategories={menuCategoryOptions}
-            onDelete={() => requestDelete('MenuRecipe', menuForm, () => setMenuForm(emptyMenuRecipe()), 'Menu recipe')}
-            onSetPricing={() => setMenuPricing(menuForm)}
-            saving={saving}
-            autosaveStatus={autoSaveStatus.menu}
-            pricingContext={pricingContext}
-            marginSettings={marginSettings}
-          />
+          <RecipeList records={menuRecipes} selectedId={menuForm?.id} onSelect={selectMenuRecipe} onNew={newMenuRecipe} emptyLabel="No menu recipes yet." />
+          {menuForm ? (
+            <MenuEditor
+              form={menuForm}
+              setForm={setMenuForm}
+              data={data}
+              menuCategories={menuCategoryOptions}
+              onDelete={() => requestDelete('MenuRecipe', menuForm, () => setMenuForm(null), 'Menu recipe')}
+              onSetPricing={() => setMenuPricing(menuForm)}
+              saving={saving}
+              autosaveStatus={autoSaveStatus.menu}
+              pricingContext={pricingContext}
+              marginSettings={marginSettings}
+            />
+          ) : (
+            <EditorPlaceholder label="menu recipe" onNew={newMenuRecipe} />
+          )}
         </div>
       )}
 

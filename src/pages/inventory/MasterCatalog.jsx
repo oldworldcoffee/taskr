@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { base44 } from '@/api/base44Client';
+import { inventoryKeys } from '@/hooks/useInventoryData';
 import { useAuth } from '@/lib/AuthContext';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { Plus, Search, Pencil, Trash2, Package, Archive, Combine, MoreVertical, FileDown, FileSpreadsheet, FileText, Upload, Download, CheckSquare, Square, FolderOpen, Check, ChevronsUpDown } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Package, Archive, Combine, MoreVertical, FileDown, FileSpreadsheet, FileText, Upload, Download, CheckSquare, Square, FolderOpen, Check, ChevronsUpDown, Sparkles, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import PageHeader from '@/components/layout/PageHeader';
@@ -12,6 +14,8 @@ import SplitOptionsDialog from '@/components/catalog/SplitOptionsDialog';
 import GroupedCatalogRow from '@/components/catalog/GroupedCatalogRow';
 import ProductGroupManager from '@/components/catalog/ProductGroupManager';
 import AssignToGroupDialog from '@/components/catalog/AssignToGroupDialog';
+import CatalogReviewDialog from '@/components/catalog/CatalogReviewDialog';
+import AiImportDialog from '@/components/catalog/AiImportDialog';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
@@ -21,17 +25,20 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { CATEGORY_GROUPS, categoryForItem, categoryGroupLabel, mergeInventoryCategories } from '@/lib/inventoryCategories';
+import { normalizeUom } from '@/lib/recipePricing';
 
-const EMPTY = { name: '', sku: '', category: '', unit_of_measure: '', unit_cost: '', is_commissary_item: false, commissary_price: '', description: '', vendor_id: '', is_active: true, purchase_options: [], product_group_id: null, group_sort_order: 0 };
+const EMPTY = { name: '', sku: '', category: '', unit_of_measure: '', unit_cost: '', is_commissary_item: false, commissary_price: '', description: '', vendor_id: '', is_active: true, purchase_options: [], product_group_id: null, group_sort_order: 0, each_conversion: null };
 const ITEM_DRAFT_KEY = 'taskr.inventory.catalog.itemDraft';
 
 const lowerName = (name) => String(name || '').trim().toLowerCase();
 
 const UOM_TO_BASE = {
   'fl-oz': { family: 'volume', toBase: 1 },
-  'oz':    { family: 'volume', toBase: 1 },
+  // oz is the avoirdupois (dry-weight) ounce; fluid ounces are fl-oz.
+  'oz':    { family: 'weight', toBase: 28.3495 },
   'ml':    { family: 'volume', toBase: 0.033814 },
   'L':     { family: 'volume', toBase: 33.814 },
+  'Pt':    { family: 'volume', toBase: 16 },
   'Qt':    { family: 'volume', toBase: 32 },
   'gal':   { family: 'volume', toBase: 128 },
   'g':     { family: 'weight', toBase: 1 },
@@ -41,12 +48,38 @@ const UOM_TO_BASE = {
   'EA':    { family: 'count',  toBase: 1 },
 };
 
+// normalizeUom maps case variants and aliases ("Kg", "Gallon") to canonical keys.
 const convertPrice = (pricePerFromUOM, fromUOM, toUOM) => {
-  if (!fromUOM || !toUOM || fromUOM === toUOM) return pricePerFromUOM;
-  const from = UOM_TO_BASE[fromUOM];
-  const to   = UOM_TO_BASE[toUOM];
-  if (!from || !to || from.family !== to.family) return null;
-  return pricePerFromUOM / (from.toBase / to.toBase);
+  const from = normalizeUom(fromUOM);
+  const to = normalizeUom(toUOM);
+  if (!from || !to || from === to) return pricePerFromUOM;
+  const fromDef = UOM_TO_BASE[from];
+  const toDef   = UOM_TO_BASE[to];
+  if (!fromDef || !toDef || fromDef.family !== toDef.family) return null;
+  return pricePerFromUOM / (fromDef.toBase / toDef.toBase);
+};
+
+// Bridges EA <-> weight/volume using the item's each_conversion
+// (e.g. 12 EA = 5 lb) when families don't convert directly.
+const convertPriceForItem = (item, pricePerFromUOM, fromUOM, toUOM) => {
+  const direct = convertPrice(pricePerFromUOM, fromUOM, toUOM);
+  if (direct !== null) return direct;
+
+  const conv = item?.each_conversion;
+  const eachCount = parseFloat(conv?.each_count);
+  const quantity = parseFloat(conv?.quantity);
+  if (!conv?.uom || !(eachCount > 0) || !(quantity > 0)) return null;
+
+  if (normalizeUom(toUOM) === 'EA') {
+    const perConvUom = convertPrice(pricePerFromUOM, fromUOM, conv.uom);
+    if (perConvUom === null) return null;
+    return perConvUom * (quantity / eachCount);
+  }
+  if (normalizeUom(fromUOM) === 'EA') {
+    const perConvUom = pricePerFromUOM * (eachCount / quantity);
+    return convertPrice(perConvUom, conv.uom, toUOM);
+  }
+  return null;
 };
 
 function SubcategoryPicker({ value, options = [], onChange, disabled }) {
@@ -108,7 +141,6 @@ export default function MasterCatalog() {
   const [form, setForm] = useState(EMPTY);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [showArchived, setShowArchived] = useState(false);
@@ -120,6 +152,10 @@ export default function MasterCatalog() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [groupByOpen, setGroupByOpen] = useState(false);
+  const [aiReviewOpen, setAiReviewOpen] = useState(false);
+  const [aiReviewing, setAiReviewing] = useState(false);
+  const [aiImportOpen, setAiImportOpen] = useState(false);
+  const [aiImportFile, setAiImportFile] = useState(null);
   const [assignToGroupOpen, setAssignToGroupOpen] = useState(false);
   const [bulkCategoryOpen, setBulkCategoryOpen] = useState(false);
   const [bulkCategoryMain, setBulkCategoryMain] = useState('ingredient');
@@ -135,8 +171,9 @@ export default function MasterCatalog() {
   const fileInputRef = useRef(null);
   const restoredDraftRef = useRef(false);
 
-  const load = async () => {
-    try {
+  const catalogQuery = useQuery({
+    queryKey: inventoryKeys.catalog(companyId),
+    queryFn: async () => {
       const [itms, vends, locs, groups, cats] = await Promise.all([
         base44.entities.InventoryItem.list(),
         base44.entities.Vendor.list(),
@@ -144,32 +181,44 @@ export default function MasterCatalog() {
         base44.entities.ProductGroup.list(),
         companyId ? base44.entities.InventoryCategory.filter({ company_id: companyId }).catch(() => []) : Promise.resolve([]),
       ]);
-      setItems(itms);
-      setVendors(vends);
-      setLocations(locs);
-      setInventoryCategories(cats);
-      
-      // Create group name lookup map
-      const groupMap = {};
-      groups.forEach(g => {
-        groupMap[g.id] = g.name;
-      });
-      setGroupNames(groupMap);
-      
-      setLoading(false);
-      return itms;
-    } catch (error) {
-      if (error.message?.includes('Rate limit')) {
-        toast.error('Too many requests. Please wait a moment and refresh.');
-      } else {
-        toast.error('Failed to load catalog: ' + error.message);
-      }
-      setLoading(false);
-      return [];
-    }
-  };
+      return { itms, vends, locs, groups, cats };
+    },
+    staleTime: 60 * 1000,
+  });
 
-  useEffect(() => { load(); }, [companyId]);
+  useEffect(() => {
+    const data = catalogQuery.data;
+    if (!data) return;
+    setItems(data.itms);
+    setVendors(data.vends);
+    setLocations(data.locs);
+    setInventoryCategories(data.cats);
+
+    // Create group name lookup map
+    const groupMap = {};
+    data.groups.forEach(g => {
+      groupMap[g.id] = g.name;
+    });
+    setGroupNames(groupMap);
+
+    setLoading(false);
+  }, [catalogQuery.data]);
+
+  useEffect(() => {
+    const error = catalogQuery.error;
+    if (!error) return;
+    if (error.message?.includes('Rate limit')) {
+      toast.error('Too many requests. Please wait a moment and refresh.');
+    } else {
+      toast.error('Failed to load catalog: ' + error.message);
+    }
+    setLoading(false);
+  }, [catalogQuery.error]);
+
+  const load = async () => {
+    const { data } = await catalogQuery.refetch();
+    return data?.itms || [];
+  };
 
   useEffect(() => {
     if (loading || restoredDraftRef.current || dialog) return;
@@ -487,25 +536,12 @@ export default function MasterCatalog() {
     toast.success('Items reordered');
   };
 
-  const handleFileUpload = async (e) => {
+  const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    
-    setUploading(true);
-    try {
-      const { file_url } = await base44.integrations.Core.UploadFile({ file });
-      const result = await base44.functions.invoke('importCatalog', { file_url });
-      
-      if (result.data.success) {
-        toast.success(`Import complete!`);
-        await load();
-      }
-    } catch (error) {
-      toast.error('Import failed: ' + error.message);
-    } finally {
-      setUploading(false);
-      e.target.value = '';
-    }
+    setAiImportFile(file);
+    setAiImportOpen(true);
+    e.target.value = '';
   };
 
   const exportCatalog = async (format) => {
@@ -621,7 +657,7 @@ export default function MasterCatalog() {
     return opts.reduce((a, b) => parseFloat(a.unit_cost) < parseFloat(b.unit_cost) ? a : b);
   };
 
-  const getPricePerUOM = (opt, itemUOM) => {
+  const getPricePerUOM = (opt, itemUOM, item) => {
     const cost = parseFloat(opt?.unit_cost || 0);
     if (!cost) return null;
     const orderingUOM = opt?.unit_of_measure || itemUOM;
@@ -645,13 +681,13 @@ export default function MasterCatalog() {
 
     if (pricePerPackUnit !== null) {
       if (packUOM === itemUOM) return { price: fmt(pricePerPackUnit), uom: itemUOM };
-      const converted = convertPrice(pricePerPackUnit, packUOM, itemUOM);
+      const converted = convertPriceForItem(item, pricePerPackUnit, packUOM, itemUOM);
       if (converted === null) return { price: fmt(pricePerPackUnit), uom: packUOM };
       return { price: fmt(converted), uom: itemUOM };
     }
 
     if (orderingUOM === itemUOM) return { price: fmt(cost), uom: itemUOM };
-    const converted = convertPrice(cost, orderingUOM, itemUOM);
+    const converted = convertPriceForItem(item, cost, orderingUOM, itemUOM);
     if (converted === null) return { price: fmt(cost), uom: orderingUOM };
     return { price: fmt(converted), uom: itemUOM };
   };
@@ -672,13 +708,13 @@ export default function MasterCatalog() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuItem onClick={downloadTemplate} disabled={uploading}>
+                <DropdownMenuItem onClick={downloadTemplate}>
                   <FileSpreadsheet className="w-4 h-4 mr-2" />
                   Download Template
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
                   <Upload className="w-4 h-4 mr-2" />
-                  Import Catalog
+                  Import Catalog (AI)
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => exportCatalog('csv')} disabled={exporting}>
@@ -691,6 +727,12 @@ export default function MasterCatalog() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            <Button variant="outline" onClick={() => setAiReviewOpen(true)}>
+              {aiReviewing
+                ? <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                : <Sparkles className="w-4 h-4 mr-1" />}
+              AI Review
+            </Button>
             <Button variant="outline" onClick={() => setShowArchived(!showArchived)}>
               <Archive className="w-4 h-4 mr-1" />{showArchived ? 'Hide Archived' : 'Show Archived'}
             </Button>
@@ -790,11 +832,6 @@ export default function MasterCatalog() {
 
         {loading ? (
           <div className="flex items-center justify-center h-32"><div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" /></div>
-        ) : uploading ? (
-          <div className="flex items-center justify-center h-32 gap-3">
-            <div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-            <span className="text-sm text-muted-foreground">Importing catalog...</span>
-          </div>
         ) : isMobile ? (
           <div className="divide-y divide-border">
             {sortedGroups.length === 0 ? (
@@ -803,7 +840,7 @@ export default function MasterCatalog() {
               const isGroup = group.groupId !== null && group.items.length > 1;
               const firstItem = group.items[0];
               const preferred = getPreferredOption(firstItem);
-              const pricePerUOM = preferred ? getPricePerUOM(preferred, firstItem.unit_of_measure) : null;
+              const pricePerUOM = preferred ? getPricePerUOM(preferred, firstItem.unit_of_measure, firstItem) : null;
               const groupVendors = [...new Set(group.items.flatMap(i => (i.purchase_options || []).map(o => o.vendor_name).filter(Boolean)))];
               return (
                 <div key={group.groupId || firstItem.id} className="p-4 space-y-2">
@@ -812,7 +849,7 @@ export default function MasterCatalog() {
                   )}
                   {group.items.map(item => {
                     const pref = getPreferredOption(item);
-                    const ppu = pref ? getPricePerUOM(pref, item.unit_of_measure) : null;
+                    const ppu = pref ? getPricePerUOM(pref, item.unit_of_measure, item) : null;
                     const isSelected = selected.has(item.id);
                     return (
                       <div key={item.id} className={`bg-card border rounded-xl p-4 ${isSelected ? 'border-primary' : 'border-border'}`}>
@@ -1020,6 +1057,25 @@ export default function MasterCatalog() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CatalogReviewDialog
+        open={aiReviewOpen}
+        onOpenChange={setAiReviewOpen}
+        categories={activeCategorySettings}
+        onReviewingChange={setAiReviewing}
+        onEditItem={(itemId) => {
+          const item = items.find(i => i.id === itemId);
+          if (item) openEdit(item);
+        }}
+        onApplied={load}
+      />
+
+      <AiImportDialog
+        open={aiImportOpen}
+        onOpenChange={setAiImportOpen}
+        file={aiImportFile}
+        onImported={load}
+      />
 
       <ProductGroupManager
         open={groupByOpen}

@@ -15,7 +15,7 @@ import { mergeInventoryCategories } from '@/lib/inventoryCategories';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 
-const UOM_OPTIONS = ['EA', 'fl-oz', 'oz', 'ml', 'L', 'Qt', 'gal', 'g', 'gr', 'kg', 'lb'];
+const UOM_OPTIONS = ['EA', 'fl-oz', 'ml', 'L', 'Pt', 'Qt', 'gal', 'oz', 'lb', 'g', 'kg'];
 const INVOICE_EXTRACTION_TIMEOUT_MS = 90 * 1000;
 const PROCESSING_STALE_MS = 2 * 60 * 1000;
 const INVOICE_WARNING_STORAGE_KEY = 'taskr.invoiceExtractionWarnings';
