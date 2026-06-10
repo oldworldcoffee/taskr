@@ -119,7 +119,7 @@ function toBool(value, fallback = false) {
   return ['yes', 'true', '1', 'y', 'active'].includes(normalized);
 }
 
-function parseJsonObject(text) {
+function parseJsonObject(text, errorMessage = 'OpenAI returned unreadable data.') {
   const raw = String(text || '').trim();
   const withoutFence = raw
     .replace(/^```(?:json)?\s*/i, '')
@@ -131,8 +131,40 @@ function parseJsonObject(text) {
     const start = withoutFence.indexOf('{');
     const end = withoutFence.lastIndexOf('}');
     if (start >= 0 && end > start) return JSON.parse(withoutFence.slice(start, end + 1));
-    throw httpError(502, 'Invoice extraction returned unreadable data.');
+    throw httpError(502, errorMessage);
   }
+}
+
+function inventoryAiModel(kind = 'inventory') {
+  if (kind === 'order_review') {
+    return process.env.OPENAI_ORDERING_MODEL || process.env.OPENAI_INVENTORY_MODEL || 'gpt-4o-mini';
+  }
+  if (kind === 'smart_pars') {
+    return process.env.OPENAI_PARS_MODEL || process.env.OPENAI_INVENTORY_MODEL || 'gpt-4o-mini';
+  }
+  return process.env.OPENAI_INVENTORY_MODEL || 'gpt-4o-mini';
+}
+
+async function requestOpenAiJson({ apiKey, model, messages, errorMessage }) {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      response_format: { type: 'json_object' },
+      messages,
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw httpError(response.status, payload.error?.message || errorMessage);
+  }
+
+  return parseJsonObject(payload.choices?.[0]?.message?.content, errorMessage);
 }
 
 function normalizeDate(value) {
@@ -740,74 +772,340 @@ async function sendEmail(client, companyId, payload) {
   return createRecord(client, 'inventory_email_logs', emailRecord);
 }
 
+function asInventoryArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function average(numbers = []) {
+  return numbers.length ? numbers.reduce((sum, number) => sum + number, 0) / numbers.length : 0;
+}
+
+function median(numbers = []) {
+  if (!numbers.length) return 0;
+  const sorted = [...numbers].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function stockQuantityFromOrderLine(line = {}) {
+  return toNumber(line.stock_quantity_ordered ?? line.quantity_ordered, 0);
+}
+
+function itemHistory(locationOrders = [], itemId) {
+  return locationOrders
+    .flatMap((order) => asInventoryArray(order.items).map((line) => ({
+      date: order.created_date || order.sent_at || order.fulfilled_at || '',
+      quantity: stockQuantityFromOrderLine(line),
+      item_id: line.item_id,
+    })))
+    .filter((line) => line.item_id === itemId && line.quantity > 0)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+}
+
+function historySummary(locationOrders, itemId) {
+  const history = itemHistory(locationOrders, itemId);
+  const quantities = history.map((row) => row.quantity);
+  return {
+    count: quantities.length,
+    average: average(quantities),
+    median: median(quantities),
+    max: quantities.length ? Math.max(...quantities) : 0,
+    recent: history.slice(-8).map((row) => row.quantity),
+  };
+}
+
+function orderReviewContext(orderItem, item, stock, locationOrders) {
+  const itemId = orderItem.item_id;
+  const history = historySummary(locationOrders, itemId);
+  return {
+    item_id: itemId,
+    item_name: orderItem.item_name || item?.name || 'Unnamed item',
+    category: orderItem.category || item?.category || '',
+    order_quantity: toNumber(orderItem.quantity_ordered ?? orderItem.qty, 0),
+    order_unit_of_measure: orderItem.order_unit_label || orderItem.unit_of_measure || '',
+    stock_quantity_ordered: stockQuantityFromOrderLine(orderItem),
+    base_unit_of_measure: orderItem.base_unit_of_measure || item?.unit_of_measure || '',
+    on_hand: toNumber(stock?.on_hand_quantity, 0),
+    current_location_par: toNumber(stock?.par_level, 0),
+    reorder_point: toNumber(stock?.reorder_point, 0),
+    ai_suggested_par: toNumber(item?.ai_suggested_par, 0),
+    minimum_reorder_volume: toNumber(item?.minimum_reorder_volume, 0),
+    historical_order_count: history.count,
+    avg_historical_order: history.average,
+    median_historical_order: history.median,
+    max_historical_order: history.max,
+    recent_historical_orders: history.recent,
+  };
+}
+
+function fallbackOrderReview(context) {
+  const aiPar = context.ai_suggested_par || context.current_location_par || 0;
+  const abovePar = aiPar > 0 && (context.on_hand + context.stock_quantity_ordered) > aiPar * 1.5;
+  const highComparedToHistory = context.avg_historical_order > 0 && context.stock_quantity_ordered > context.avg_historical_order * 1.75;
+  const belowMinimum = context.minimum_reorder_volume > 0 && context.stock_quantity_ordered < context.minimum_reorder_volume;
+  const status = highComparedToHistory || abovePar || belowMinimum
+    ? 'warning'
+    : context.historical_order_count === 0
+      ? 'question'
+      : 'ok';
+
+  let message = 'Order quantity looks reasonable.';
+  let recommendation = '';
+  if (status === 'question') {
+    message = 'No order history yet for this item.';
+    recommendation = 'Review the quantity against current need before sending.';
+  } else if (belowMinimum) {
+    message = 'This order is below the item minimum reorder volume.';
+    recommendation = 'Increase the quantity or confirm the supplier can fulfill a smaller order.';
+  } else if (status === 'warning') {
+    message = 'This quantity is higher than recent patterns or current par levels.';
+    recommendation = 'Double-check the quantity before sending.';
+  }
+
+  return {
+    item_id: context.item_id,
+    item_name: context.item_name,
+    order_quantity: context.order_quantity,
+    on_hand: context.on_hand,
+    ai_par: aiPar,
+    avg_historical_order: context.avg_historical_order,
+    status,
+    message,
+    recommendation,
+  };
+}
+
+function cleanShortText(value, maxLength = 280) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function normalizeOrderReview(aiReview, contexts) {
+  const rows = asInventoryArray(aiReview);
+  const byItemId = new Map(rows.map((row) => [String(row.item_id || ''), row]));
+  const validStatuses = new Set(['ok', 'warning', 'question']);
+
+  return contexts.map((context, index) => {
+    const fallback = fallbackOrderReview(context);
+    const raw = byItemId.get(String(context.item_id || '')) || rows[index] || {};
+    const status = validStatuses.has(raw.status) ? raw.status : fallback.status;
+    return {
+      ...fallback,
+      order_quantity: toNumber(raw.order_quantity ?? raw.quantity_ordered, fallback.order_quantity),
+      on_hand: toNumber(raw.on_hand, fallback.on_hand),
+      ai_par: toNumber(raw.ai_par ?? raw.suggested_par, fallback.ai_par),
+      avg_historical_order: toNumber(raw.avg_historical_order, fallback.avg_historical_order),
+      status,
+      message: cleanShortText(raw.message) || fallback.message,
+      recommendation: cleanShortText(raw.recommendation),
+    };
+  });
+}
+
 async function reviewOrderBeforeSend(client, companyId, body) {
   const [locInv, items, previousOrders] = await Promise.all([
     fetchCompanyRows(client, 'inventory_location_stock', companyId),
     fetchCompanyRows(client, 'inventory_items', companyId),
     fetchCompanyRows(client, 'inventory_orders', companyId),
   ]);
-  const review = (body.order_items || []).map((orderItem) => {
+  const locationOrders = previousOrders.filter((order) => order.location_id === body.location_id);
+  const contexts = asInventoryArray(body.order_items).map((orderItem) => {
     const item = items.find((row) => row.id === orderItem.item_id);
     const stock = locInv.find((row) => row.location_id === body.location_id && row.item_id === orderItem.item_id);
-    const historical = previousOrders
-      .filter((order) => order.location_id === body.location_id)
-      .flatMap((order) => order.items || [])
-      .filter((row) => row.item_id === orderItem.item_id)
-      .map((row) => Number(row.quantity_ordered || 0))
-      .filter((quantity) => quantity > 0);
-    const avg = historical.length ? historical.reduce((sum, quantity) => sum + quantity, 0) / historical.length : 0;
-    const orderQuantity = Number(orderItem.quantity_ordered || 0);
-    const aiPar = Number(item?.ai_suggested_par || stock?.par_level || 0);
-    const highComparedToHistory = avg > 0 && orderQuantity > avg * 1.75;
-    const abovePar = aiPar > 0 && (Number(stock?.on_hand_quantity || 0) + orderQuantity) > aiPar * 1.5;
-    const status = highComparedToHistory || abovePar ? 'warning' : avg === 0 ? 'question' : 'ok';
-    return {
-      item_name: orderItem.item_name,
-      order_quantity: orderQuantity,
-      on_hand: Number(stock?.on_hand_quantity || 0),
-      ai_par: aiPar,
-      avg_historical_order: avg,
-      status,
-      message: status === 'ok' ? 'Order quantity looks reasonable.' : status === 'question' ? 'No order history yet for this item.' : 'This quantity is higher than recent patterns or current par levels.',
-      recommendation: status === 'warning' ? 'Double-check the quantity before sending.' : '',
-    };
+    return orderReviewContext(orderItem, item, stock, locationOrders);
   });
-  return { success: true, review };
+
+  if (!contexts.length) return { success: true, review: [] };
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return {
+      success: true,
+      ai_source: 'history_fallback',
+      warning: 'OpenAI is not configured yet, so Taskr used the built-in order review fallback.',
+      review: contexts.map(fallbackOrderReview),
+    };
+  }
+
+  const model = inventoryAiModel('order_review');
+  const parsed = await requestOpenAiJson({
+    apiKey,
+    model,
+    errorMessage: 'OpenAI order review returned unreadable data.',
+    messages: [
+      {
+        role: 'system',
+        content: [
+          'You are Taskr inventory ordering AI for restaurants, coffee shops, and retail operators.',
+          'Review pending purchase order lines against on-hand stock, location par, item AI par, reorder minimums, and recent order history.',
+          'Return JSON only: {"review":[{"item_id":"","status":"ok|warning|question","message":"","recommendation":"","ai_par":0,"avg_historical_order":0,"on_hand":0,"order_quantity":0}]}',
+          'Use warning for likely over-ordering, below-minimum orders, or quantities that conflict with par or history.',
+          'Use question when data is too sparse. Keep messages concise and operational.',
+          'Use only item_id values provided by the user.',
+        ].join(' '),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          location_id: body.location_id,
+          items: contexts,
+        }),
+      },
+    ],
+  });
+
+  return {
+    success: true,
+    ai_source: 'openai',
+    model,
+    review: normalizeOrderReview(parsed.review, contexts),
+  };
+}
+
+function chunkArray(values, size) {
+  const chunks = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function smartParContext(item, stock, locationOrders) {
+  const history = historySummary(locationOrders, item.id);
+  return {
+    item_id: item.id,
+    item_name: item.name || 'Unnamed item',
+    category: item.category || '',
+    unit_of_measure: item.unit_of_measure || '',
+    unit_cost: toNumber(item.unit_cost, 0),
+    current_on_hand: toNumber(stock?.on_hand_quantity, 0),
+    current_location_par: toNumber(stock?.par_level, 0),
+    current_reorder_point: toNumber(stock?.reorder_point, 0),
+    existing_ai_suggested_par: toNumber(item.ai_suggested_par, 0),
+    existing_minimum_reorder_volume: toNumber(item.minimum_reorder_volume, 0),
+    history_count: history.count,
+    avg_order_quantity: history.average,
+    median_order_quantity: history.median,
+    max_order_quantity: history.max,
+    recent_order_quantities: history.recent,
+  };
+}
+
+function fallbackSmartParResult(context) {
+  const suggested = Math.max(1, Math.ceil(context.avg_order_quantity * 1.25));
+  const minimum = Math.max(1, Math.floor(suggested * 0.35));
+  return {
+    item_id: context.item_id,
+    item_name: context.item_name,
+    status: 'updated',
+    suggested_par: suggested,
+    minimum_reorder_volume: minimum,
+    confidence: context.history_count >= 4 ? 'medium' : 'low',
+    reason: context.history_count >= 4
+      ? 'Based on recent order history with a modest buffer.'
+      : 'Based on limited order history with a conservative buffer.',
+  };
+}
+
+function noHistorySmartParResult(item) {
+  return {
+    item_id: item.id,
+    item_name: item.name || 'Unnamed item',
+    status: 'no_history',
+  };
+}
+
+function normalizeSmartParResult(raw, context) {
+  const fallback = fallbackSmartParResult(context);
+  const suggested = Math.max(1, Math.ceil(toNumber(raw.suggested_par ?? raw.par_level ?? raw.ai_suggested_par, fallback.suggested_par)));
+  let minimum = Math.max(1, Math.ceil(toNumber(raw.minimum_reorder_volume ?? raw.minimum_order ?? raw.reorder_point, fallback.minimum_reorder_volume)));
+  if (minimum > suggested) minimum = Math.max(1, Math.floor(suggested * 0.5));
+
+  return {
+    ...fallback,
+    suggested_par: suggested,
+    minimum_reorder_volume: minimum,
+    confidence: ['low', 'medium', 'high'].includes(raw.confidence) ? raw.confidence : fallback.confidence,
+    reason: cleanShortText(raw.reason, 220) || fallback.reason,
+  };
+}
+
+async function openAiSmartParBatch(apiKey, model, batch) {
+  const parsed = await requestOpenAiJson({
+    apiKey,
+    model,
+    errorMessage: 'OpenAI smart par calculation returned unreadable data.',
+    messages: [
+      {
+        role: 'system',
+        content: [
+          'You calculate AI suggested par levels for inventory ordering.',
+          'Use base stock units from the provided unit_of_measure and recent order quantities.',
+          'Recommend a par that covers normal order demand with a practical buffer, without overstocking expensive or slow-moving items.',
+          'minimum_reorder_volume should be lower than or equal to suggested_par and represent a practical minimum order trigger.',
+          'Return JSON only: {"results":[{"item_id":"","suggested_par":0,"minimum_reorder_volume":0,"confidence":"low|medium|high","reason":""}]}',
+          'Use only item_id values provided by the user. Do not include items without history.',
+        ].join(' '),
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({ items: batch }),
+      },
+    ],
+  });
+  return asInventoryArray(parsed.results);
 }
 
 async function calculateSmartParsAfterCount(client, companyId, body) {
   const locationId = body.location_id;
-  const [items, orders] = await Promise.all([
+  const [items, orders, locInv] = await Promise.all([
     fetchCompanyRows(client, 'inventory_items', companyId),
     fetchCompanyRows(client, 'inventory_orders', companyId),
+    fetchCompanyRows(client, 'inventory_location_stock', companyId),
   ]);
   const activeItems = items.filter((item) => item.is_active !== false);
   const locationOrders = orders.filter((order) => order.location_id === locationId);
-  const results = [];
+  const contexts = activeItems.map((item) => smartParContext(
+    item,
+    locInv.find((row) => row.location_id === locationId && row.item_id === item.id),
+    locationOrders
+  ));
+  const contextsWithHistory = contexts.filter((context) => context.history_count > 0);
+  const resultsByItemId = new Map();
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = inventoryAiModel('smart_pars');
 
-  for (const item of activeItems) {
-    const quantities = locationOrders
-      .flatMap((order) => order.items || [])
-      .filter((row) => row.item_id === item.id)
-      .map((row) => Number(row.quantity_ordered || 0))
-      .filter((quantity) => quantity > 0);
-    if (!quantities.length) {
-      results.push({ item_name: item.name, status: 'no_history' });
-      continue;
+  if (apiKey && contextsWithHistory.length > 0) {
+    for (const batch of chunkArray(contextsWithHistory, 40)) {
+      const aiRows = await openAiSmartParBatch(apiKey, model, batch);
+      const aiRowsByItemId = new Map(aiRows.map((row) => [String(row.item_id || ''), row]));
+      for (const context of batch) {
+        resultsByItemId.set(
+          context.item_id,
+          normalizeSmartParResult(aiRowsByItemId.get(String(context.item_id)) || {}, context)
+        );
+      }
     }
-    const avg = quantities.reduce((sum, quantity) => sum + quantity, 0) / quantities.length;
-    const suggested = Math.ceil(avg * 1.25);
-    const minimum = Math.max(1, Math.floor(suggested * 0.35));
-    await updateRecord(client, 'inventory_items', item.id, companyId, {
-      ai_suggested_par: suggested,
-      minimum_reorder_volume: minimum,
-      last_par_calculation_date: nowIso(),
-    });
-    results.push({ item_name: item.name, status: 'updated', suggested_par: suggested, minimum_reorder_volume: minimum });
+  } else {
+    for (const context of contextsWithHistory) {
+      resultsByItemId.set(context.item_id, fallbackSmartParResult(context));
+    }
   }
+
+  const results = activeItems.map((item) => resultsByItemId.get(item.id) || noHistorySmartParResult(item));
+  const now = nowIso();
+  await Promise.all(results
+    .filter((row) => row.status === 'updated')
+    .map((row) => updateRecord(client, 'inventory_items', row.item_id, companyId, {
+      ai_suggested_par: row.suggested_par,
+      minimum_reorder_volume: row.minimum_reorder_volume,
+      last_par_calculation_date: now,
+    })));
 
   return {
     success: true,
+    ai_source: apiKey ? 'openai' : 'history_fallback',
+    model: apiKey ? model : undefined,
+    warning: apiKey ? '' : 'OpenAI is not configured yet, so Taskr used the built-in smart par fallback.',
     items_processed: activeItems.length,
     items_updated: results.filter((row) => row.status === 'updated').length,
     results,
@@ -1032,7 +1330,7 @@ async function extractInvoiceImage(client, user, body) {
   }
 
   const content = payload.choices?.[0]?.message?.content;
-  const parsed = parseJsonObject(content);
+  const parsed = parseJsonObject(content, 'Invoice extraction returned unreadable data.');
   const items = normalizeExtractedItems(parsed.items, activeCatalogItems);
 
   return {

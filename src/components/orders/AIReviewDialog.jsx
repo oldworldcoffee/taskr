@@ -14,12 +14,14 @@ export default function AIReviewDialog({ open, onOpenChange, orderItems, locatio
   const [review, setReview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [warning, setWarning] = useState('');
 
   const loadReview = async () => {
     if (asArray(orderItems).length === 0) return;
     
     setLoading(true);
     setError(null);
+    setWarning('');
     
     try {
       const response = await base44.functions.invoke('reviewOrderBeforeSend', {
@@ -29,6 +31,7 @@ export default function AIReviewDialog({ open, onOpenChange, orderItems, locatio
       
       if (response.data && response.data.success) {
         setReview(asArray(response.data.review));
+        setWarning(response.data.warning || '');
       } else {
         setError('Failed to load review');
       }
@@ -96,6 +99,11 @@ export default function AIReviewDialog({ open, onOpenChange, orderItems, locatio
             </div>
           ) : (
             <div className="space-y-3">
+              {warning && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  <p className="text-xs text-amber-800">{warning}</p>
+                </div>
+              )}
               {reviewItems.map((item, idx) => (
                 <div
                   key={idx}
