@@ -4,8 +4,10 @@ import {
   ArrowLeftRight,
   BarChart3,
   Calculator,
+  CalendarDays,
   BookOpen,
   ChevronRight,
+  Database,
   ClipboardList,
   Coffee,
   DollarSign,
@@ -28,6 +30,7 @@ import {
   Truck,
   UserCircle,
   Users,
+  Warehouse,
   Wrench,
 } from "lucide-react";
 import { base44 } from "@/api/base44Client";
@@ -64,6 +67,19 @@ const inventoryItems = [
   { path: "/dashboard/inventory/reports", label: "Reports", icon: BarChart3 },
   { path: "/dashboard/inventory/recipes-pricing", label: "Recipes & Pricing", icon: Calculator },
   { path: "/dashboard/inventory/settings", label: "Settings", icon: Settings },
+];
+
+const roasteryItems = [
+  { path: "/dashboard/roastery", label: "Overview", icon: LayoutDashboard, exact: true },
+  { path: "/dashboard/roastery/inventory", label: "Green Inventory", icon: Package },
+  { path: "/dashboard/roastery/coffee-library", label: "Coffee Library", icon: BookOpen },
+  { path: "/dashboard/roastery/warehouses", label: "Warehouses", icon: Warehouse },
+  { path: "/dashboard/roastery/release-schedule", label: "Release Schedule", icon: CalendarDays },
+  { path: "/dashboard/roastery/pricing", label: "Pricing Calculator", icon: Calculator },
+  { path: "/dashboard/roastery/invoices", label: "Invoices", icon: FileText },
+  { path: "/dashboard/roastery/reports", label: "Reports", icon: BarChart3 },
+  { path: "/dashboard/roastery/data-tools", label: "Data Tools", icon: Database },
+  { path: "/dashboard/roastery/settings", label: "Settings", icon: Settings },
 ];
 
 const teamHubItems = [
@@ -184,11 +200,13 @@ function NavGroup({
 function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, unreadForum, markChatSeen, markForumSeen }) {
   const role = user?.role;
   const inventoryEnabled = company?.enabled_features?.includes("inventory") && ["admin", "manager", "super_admin"].includes(role);
+  const roasteryEnabled = ["admin", "manager", "super_admin"].includes(role);
   const visibleTeamHubItems = teamHubItems.filter((item) => canSeeItem(item, role));
   const visiblePrimaryItems = primaryItems.filter((item) => canSeeItem(item, role));
   const isItemActive = (item) => item.exact ? isExact(item.path) : isActive(item.path);
   const checklistsActive = isActive("/dashboard/checklists") || isActive("/dashboard/checklist") || isActive("/dashboard/issues") || isActive("/dashboard/deposits") || isActive("/dashboard/review");
   const inventoryActive = isActive("/dashboard/inventory");
+  const roasteryActive = isActive("/dashboard/roastery");
   const teamHubActive = visibleTeamHubItems.some(isItemActive);
   const teamHubBadge = (unreadChat || 0) + (unreadForum || 0);
 
@@ -224,6 +242,21 @@ function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, un
           icon={PackageCheck}
           items={inventoryItems}
           active={inventoryActive}
+          isItemActive={isItemActive}
+          onNavigate={onNavigate}
+          unreadChat={unreadChat}
+          unreadForum={unreadForum}
+          markChatSeen={markChatSeen}
+          markForumSeen={markForumSeen}
+        />
+      )}
+
+      {roasteryEnabled && (
+        <NavGroup
+          label="Roastery Management"
+          icon={Coffee}
+          items={roasteryItems}
+          active={roasteryActive}
           isItemActive={isItemActive}
           onNavigate={onNavigate}
           unreadChat={unreadChat}

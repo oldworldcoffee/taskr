@@ -57,6 +57,17 @@ import InventoryReports from "@/pages/inventory/Reports.jsx";
 import InventoryRecipesPricing from "@/pages/inventory/RecipesPricing";
 import InventorySettings from "@/pages/inventory/Settings";
 import VendorOrderView from "@/pages/inventory/VendorOrderView";
+import RoasteryLayout from "@/components/roastery/RoasteryLayout";
+import RoasteryDashboard from "@/pages/roastery/Dashboard.jsx";
+import RoasteryInventory from "@/pages/roastery/Inventory.jsx";
+import RoasteryCoffeeLibrary from "@/pages/roastery/CoffeeLibrary.jsx";
+import RoasteryWarehouses from "@/pages/roastery/Warehouses.jsx";
+import RoasteryReleaseSchedule from "@/pages/roastery/ReleaseSchedule.jsx";
+import RoasteryPricingCalculator from "@/pages/roastery/PricingCalculator.jsx";
+import RoasteryInvoices from "@/pages/roastery/Invoices.jsx";
+import RoasteryReports from "@/pages/roastery/Reports.jsx";
+import RoasteryDataTools from "@/pages/roastery/DataTools.jsx";
+import RoasterySettings from "@/pages/roastery/Settings.jsx";
 
 import SuperAdminLayout from "@/components/layout/SuperAdminLayout";
 import SuperAdminOverview from "@/pages/super-admin/Overview";
@@ -146,6 +157,18 @@ const AuthenticatedApp = () => {
           <Route path="/dashboard/chat" element={<Chat />} />
           <Route path="/dashboard/private-groups" element={<PrivateGroups />} />
           <Route path="/dashboard/equipment" element={<Equipment />} />
+          <Route path="/dashboard/roastery" element={<RoasteryLayout />}>
+            <Route index element={<RoasteryDashboard />} />
+            <Route path="inventory" element={<RoasteryInventory />} />
+            <Route path="coffee-library" element={<RoasteryCoffeeLibrary />} />
+            <Route path="warehouses" element={<RoasteryWarehouses />} />
+            <Route path="release-schedule" element={<RoasteryReleaseSchedule />} />
+            <Route path="pricing" element={<RoasteryPricingCalculator />} />
+            <Route path="invoices" element={<RoasteryInvoices />} />
+            <Route path="reports" element={<RoasteryReports />} />
+            <Route path="data-tools" element={<RoasteryDataTools />} />
+            <Route path="settings" element={<RoasterySettings />} />
+          </Route>
           <Route element={<InventoryRoute />}>
             <Route path="/dashboard/inventory" element={<InventoryLayout />}>
               <Route index element={<InventoryDashboard />} />
