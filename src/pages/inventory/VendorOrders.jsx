@@ -282,6 +282,22 @@ export default function VendorOrders() {
   const handleSmartFillConfirm = (results) => {
     // Use AI suggested pars instead of manual pars
     if (!selectedLocation) return;
+    const suggestedRowsByItemId = new Map(
+      asArray(results?.results)
+        .filter(row => row.status === 'updated' && row.item_id)
+        .map(row => [row.item_id, row])
+    );
+    setItems(prevItems => asArray(prevItems).map(item => {
+      const suggestion = suggestedRowsByItemId.get(item.id);
+      return suggestion
+        ? {
+            ...item,
+            ai_suggested_par: suggestion.suggested_par,
+            minimum_reorder_volume: suggestion.minimum_reorder_volume,
+          }
+        : item;
+    }));
+
     const newCarts = { ...carts };
     
     items.forEach(item => {
@@ -291,7 +307,8 @@ export default function VendorOrders() {
       
       const li = getLocInv(item.id);
       const onHand = asNumber(li?.on_hand_quantity);
-      const aiPar = asNumber(item.ai_suggested_par);
+      const suggestedRow = suggestedRowsByItemId.get(item.id);
+      const aiPar = asNumber(suggestedRow?.suggested_par ?? item.ai_suggested_par);
       const needed = Math.max(0, aiPar - onHand);
       
       if (needed > 0) {
