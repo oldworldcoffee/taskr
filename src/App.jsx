@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from "@/lib/AuthContext";
 import UserNotRegisteredError from "@/components/UserNotRegisteredError";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import BrandThemeProvider from "@/components/shared/BrandThemeProvider";
+import RouteErrorBoundary from "@/components/shared/RouteErrorBoundary";
 
 import Login from "@/pages/Login";
 import Register from "@/pages/Register";
@@ -41,18 +42,18 @@ import PrivateGroups from "@/pages/PrivateGroups";
 import Equipment from "@/pages/Equipment";
 import InventoryRoute from "@/components/inventory/InventoryRoute";
 import InventoryLayout from "@/components/inventory/InventoryLayout";
-import InventoryDashboard from "@/pages/inventory/Dashboard.jsx?v=taskr-stock-today-20260609";
+import InventoryDashboard from "@/pages/inventory/Dashboard.jsx";
 import InventoryCatalog from "@/pages/inventory/MasterCatalog";
-import InventoryStock from "@/pages/inventory/LocationStock.jsx?v=taskr-stock-today-20260609";
-import InventoryCounts from "@/pages/inventory/InventoryCounts.jsx?v=taskr-stock-today-20260609";
-import InventoryOrders from "@/pages/inventory/VendorOrders.jsx?v=taskr-stock-today-20260609";
+import InventoryStock from "@/pages/inventory/LocationStock.jsx";
+import InventoryCounts from "@/pages/inventory/InventoryCounts.jsx";
+import InventoryOrders from "@/pages/inventory/VendorOrders.jsx";
 import InventoryOnlineOrders from "@/pages/inventory/OnlineOrders";
 import InventoryInStoreOrders from "@/pages/inventory/InStoreOrders";
-import InventoryCommissary from "@/pages/inventory/Commissary.jsx?v=taskr-stock-today-20260609";
+import InventoryCommissary from "@/pages/inventory/Commissary.jsx";
 import InventoryTransfers from "@/pages/inventory/Transfers";
 import InventoryInvoices from "@/pages/inventory/Invoices";
 import InventoryVendors from "@/pages/inventory/Vendors";
-import InventoryReports from "@/pages/inventory/Reports.jsx?v=taskr-stock-today-20260609";
+import InventoryReports from "@/pages/inventory/Reports.jsx";
 import InventoryRecipesPricing from "@/pages/inventory/RecipesPricing";
 import InventorySettings from "@/pages/inventory/Settings";
 import VendorOrderView from "@/pages/inventory/VendorOrderView";
@@ -151,7 +152,7 @@ const AuthenticatedApp = () => {
               <Route path="catalog" element={<InventoryCatalog />} />
               <Route path="stock" element={<InventoryStock />} />
               <Route path="counts" element={<InventoryCounts />} />
-              <Route path="orders" element={<InventoryOrders />} />
+              <Route path="orders" element={<RouteErrorBoundary><InventoryOrders /></RouteErrorBoundary>} />
               <Route path="online-orders" element={<InventoryOnlineOrders />} />
               <Route path="instore-orders" element={<InventoryInStoreOrders />} />
               <Route path="commissary" element={<InventoryCommissary />} />

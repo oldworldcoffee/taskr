@@ -7,7 +7,7 @@ const toPositiveNumber = (value, fallback = 0) => {
 };
 
 export function getVendorPurchaseOption(item, vendorId) {
-  const options = item?.purchase_options || [];
+  const options = Array.isArray(item?.purchase_options) ? item.purchase_options : [];
   if (!options.length) return null;
 
   if (vendorId) {
@@ -59,7 +59,8 @@ export function getOrderUnit(item, vendorOrOption = null) {
     return { label: optionUnit, multiplier: 1, baseUnit, option };
   }
 
-  const countUnit = (item?.count_units || []).find((unit) => {
+  const countUnits = Array.isArray(item?.count_units) ? item.count_units : [];
+  const countUnit = countUnits.find((unit) => {
     const multiplier = toPositiveNumber(unit?.multiplier, 0);
     return clean(unit?.label) && multiplier > 1 && lower(unit.label) !== lower(baseUnit);
   });

@@ -14,13 +14,14 @@ import { Textarea } from '@/components/ui/textarea';
 import PageHeader from '@/components/layout/PageHeader';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { format } from 'date-fns';
-import MultiVendorCart from '@/components/orders/MultiVendorCart.jsx?v=taskr-stock-today-20260609';
+import MultiVendorCart from '@/components/orders/MultiVendorCart.jsx';
 import OrderHistory from '@/components/orders/OrderHistory';
 import SmartFillDialog from '@/components/orders/SmartFillDialog';
 import AIReviewDialog from '@/components/orders/AIReviewDialog';
 import { getOrderUnit, toStockQuantity } from '@/lib/inventoryOrderUnits';
 
 const asArray = (value) => Array.isArray(value) ? value : [];
+const asObject = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const asNumber = (value) => {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
@@ -33,6 +34,9 @@ const lineTotal = (item) => {
   return asNumber(item?.qty ?? item?.quantity_ordered) * asNumber(item?.unit_cost);
 };
 const cartTotal = (cart) => asArray(cart).reduce((sum, item) => sum + lineTotal(item), 0);
+const purchaseOptionsFor = (item) => Array.isArray(item?.purchase_options) ? item.purchase_options : [];
+const locationSettingsFor = (vendor) => asArray(vendor?.location_settings);
+const firstArray = (...values) => values.find(Array.isArray) || [];
 
 
 export default function VendorOrders() {
@@ -108,13 +112,14 @@ export default function VendorOrders() {
 
   const itemHasSupplierVendor = (item, vendorId) => (
     item.vendor_id === vendorId ||
-    (item.purchase_options || []).some(p => p.vendor_id === vendorId)
+    purchaseOptionsFor(item).some(p => p.vendor_id === vendorId)
   );
 
   const getSupplierVendorForItem = (item) => {
     if (selectedVendor && itemHasSupplierVendor(item, selectedVendor)) return selectedVendor;
-    const preferred = (item.purchase_options || []).find(p => p.is_preferred);
-    const firstPurchaseOptionVendorId = item.purchase_options?.[0]?.vendor_id;
+    const purchaseOptions = purchaseOptionsFor(item);
+    const preferred = purchaseOptions.find(p => p.is_preferred);
+    const firstPurchaseOptionVendorId = purchaseOptions[0]?.vendor_id;
 
     if (selectedIsCommissary && item.is_commissary_item) {
       return preferred?.vendor_id ||
@@ -154,8 +159,9 @@ export default function VendorOrders() {
       return asNumber(item.commissary_price);
     }
     // Otherwise use regular vendor pricing
-    const preferred = (item.purchase_options || []).find(p => p.vendor_id === vendorId && p.is_preferred) || 
-                     (item.purchase_options || []).find(p => p.vendor_id === vendorId);
+    const purchaseOptions = purchaseOptionsFor(item);
+    const preferred = purchaseOptions.find(p => p.vendor_id === vendorId && p.is_preferred) || 
+                     purchaseOptions.find(p => p.vendor_id === vendorId);
     return asNumber(preferred?.unit_cost ?? item.unit_cost);
   };
 
@@ -170,8 +176,8 @@ export default function VendorOrders() {
       name: cartItem.item_name || cartItem.name || catalogItem.name,
       item_name: cartItem.item_name || cartItem.name || catalogItem.name,
       unit_of_measure: cartItem.base_unit_of_measure || catalogItem.unit_of_measure || cartItem.unit_of_measure,
-      purchase_options: cartItem.purchase_options?.length ? cartItem.purchase_options : catalogItem.purchase_options || [],
-      count_units: cartItem.count_units?.length ? cartItem.count_units : catalogItem.count_units || [],
+      purchase_options: purchaseOptionsFor(cartItem).length ? purchaseOptionsFor(cartItem) : purchaseOptionsFor(catalogItem),
+      count_units: asArray(cartItem.count_units).length ? asArray(cartItem.count_units) : asArray(catalogItem.count_units),
       inner_pack_name: cartItem.inner_pack_name || catalogItem.inner_pack_name,
       inner_pack_units: cartItem.inner_pack_units || catalogItem.inner_pack_units,
       packs_per_case: cartItem.packs_per_case || catalogItem.packs_per_case,
@@ -196,7 +202,7 @@ export default function VendorOrders() {
       total_cost: orderQty * cost,
       on_hand: asNumber(onHand),
       par_level: asNumber(parLevel),
-      purchase_options: item.purchase_options || [],
+      purchase_options: purchaseOptionsFor(item),
       selected_purchase_option: orderUnit.option || null,
       variant_id: item.variant_id || null,
       variant_name: item.variant_name || null,
@@ -248,7 +254,7 @@ export default function VendorOrders() {
       const needed = Math.max(0, par - onHand);
       
       if (needed > 0) {
-        if (!newCarts[vendorId]) newCarts[vendorId] = [];
+        newCarts[vendorId] = asArray(newCarts[vendorId]);
         const existing = newCarts[vendorId].findIndex(c => c.item_id === item.id);
         const unitCost = getUnitCostForItem(item, vendorId);
         const orderUnit = getOrderUnit(item, vendorId);
@@ -270,7 +276,7 @@ export default function VendorOrders() {
       }
     });
     
-    setCarts(Object.fromEntries(Object.entries(newCarts).filter(([_, cart]) => cart.filter(c => c.qty > 0).length > 0)));
+    setCarts(Object.fromEntries(Object.entries(newCarts).filter(([_, cart]) => asArray(cart).filter(c => c.qty > 0).length > 0)));
   };
 
   const handleSmartFillConfirm = (results) => {
@@ -289,7 +295,7 @@ export default function VendorOrders() {
       const needed = Math.max(0, aiPar - onHand);
       
       if (needed > 0) {
-        if (!newCarts[vendorId]) newCarts[vendorId] = [];
+        newCarts[vendorId] = asArray(newCarts[vendorId]);
         const existing = newCarts[vendorId].findIndex(c => c.item_id === item.id);
         const unitCost = getUnitCostForItem(item, vendorId);
         const orderUnit = getOrderUnit(item, vendorId);
@@ -311,7 +317,7 @@ export default function VendorOrders() {
       }
     });
     
-    setCarts(Object.fromEntries(Object.entries(newCarts).filter(([_, cart]) => cart.filter(c => c.qty > 0).length > 0)));
+    setCarts(Object.fromEntries(Object.entries(newCarts).filter(([_, cart]) => asArray(cart).filter(c => c.qty > 0).length > 0)));
   };
 
   const addToCart = (item, vendorId, qty = 1) => {
@@ -328,7 +334,7 @@ export default function VendorOrders() {
     // Use functional update to handle rapid successive calls
     setCarts(prevCarts => {
       const newCarts = { ...prevCarts };
-      if (!newCarts[targetVendor]) newCarts[targetVendor] = [];
+      newCarts[targetVendor] = asArray(newCarts[targetVendor]);
       
       const existing = newCarts[targetVendor].findIndex(c => c.item_id === item.id);
       const li = locInv.find(l => l.location_id === selectedLocation && l.item_id === item.id);
@@ -384,7 +390,7 @@ export default function VendorOrders() {
   const removeFromCart = (vendorId, idx) => {
     const newCarts = { ...carts };
     if (!newCarts[vendorId]) return;
-    newCarts[vendorId] = newCarts[vendorId].filter((_, i) => i !== idx);
+    newCarts[vendorId] = asArray(newCarts[vendorId]).filter((_, i) => i !== idx);
     if (newCarts[vendorId].length === 0) delete newCarts[vendorId];
     setCarts(newCarts);
   };
@@ -402,7 +408,7 @@ export default function VendorOrders() {
   const editDraftOrder = (order) => {
     const vendorId = order.vendor_id;
     setCarts({
-      [vendorId]: (order.items || []).map(i => {
+      [vendorId]: asArray(order.items).map(i => {
         const itemDetails = getCartItemDetails(i);
         const orderUnit = getOrderUnit(itemDetails, vendorId);
         const qty = asNumber(i.quantity_ordered);
@@ -422,7 +428,7 @@ export default function VendorOrders() {
           on_hand: 0,
           par_level: 0,
           selected_purchase_option: i.selected_purchase_option || orderUnit.option || null,
-          purchase_options: itemDetails.purchase_options || [],
+          purchase_options: purchaseOptionsFor(itemDetails),
           variant_id: i.variant_id || null,
           variant_quantities: i.variant_quantities || null,
         };
@@ -435,8 +441,8 @@ export default function VendorOrders() {
 
   const updateDraftOrder = async () => {
     const vendorId = editDialog.vendor_id;
-    const vendorCart = carts[vendorId] || [];
-    const orderItems = vendorCart.filter(i => i.qty > 0).map(i => buildOrderItem(i, vendorId));
+    const vendorCart = asArray(carts[vendorId]);
+    const orderItems = asArray(vendorCart).filter(i => i.qty > 0).map(i => buildOrderItem(i, vendorId));
     const totalAmount = cartTotal(vendorCart);
     await base44.entities.Order.update(editDialog.id, {
       items: orderItems,
@@ -451,17 +457,17 @@ export default function VendorOrders() {
   };
 
   const getCartTotal = (vendorId) => {
-    const vendorCart = carts[vendorId] || [];
+    const vendorCart = asArray(carts[vendorId]);
     return cartTotal(vendorCart);
   };
 
   const getAllCartsTotal = () => {
-    return Object.values(carts).reduce((total, vendorCart) => total + cartTotal(vendorCart), 0);
+    return Object.values(asObject(carts)).reduce((total, vendorCart) => total + cartTotal(vendorCart), 0);
   };
 
   const createOrder = async (vendorId) => {
-    const vendorCart = carts[vendorId] || [];
-    const orderItems = vendorCart.filter(i => i.qty > 0).map(i => buildOrderItem(i, vendorId));
+    const vendorCart = asArray(carts[vendorId]);
+    const orderItems = asArray(vendorCart).filter(i => i.qty > 0).map(i => buildOrderItem(i, vendorId));
     
     // Determine order type based on vendor
     const vendor = vendors.find(v => v.id === vendorId);
@@ -478,8 +484,8 @@ export default function VendorOrders() {
   // delivery_days entries have: day (e.g. "Thursday"), cutoff_day (e.g. "Wednesday"), cutoff_time (e.g. "5:00 PM")
   const calcNextDeliveryDate = (vendor, locationId) => {
     if (!vendor) return '';
-    const locSettings = (vendor.location_settings || []).find(s => s.location_id === locationId);
-    const deliveryDays = locSettings?.delivery_days || vendor.default_delivery_days || vendor.delivery_days || [];
+    const locSettings = locationSettingsFor(vendor).find(s => s.location_id === locationId);
+    const deliveryDays = firstArray(locSettings?.delivery_days, vendor.default_delivery_days, vendor.delivery_days);
     const enabledDays = deliveryDays.filter(d => d.enabled && d.cutoff_day && d.cutoff_time);
     if (enabledDays.length === 0) return '';
 
@@ -548,7 +554,7 @@ export default function VendorOrders() {
     // User confirmed AI review, proceed with order creation
     if (!pendingOrderItems || !pendingVendorId) return;
     
-    const vendorCart = carts[pendingVendorId] || [];
+    const vendorCart = asArray(carts[pendingVendorId]);
     const totalAmount = cartTotal(vendorCart);
     const vendor = vendors.find(v => v.id === pendingVendorId);
     const isNonEmailVendor = pendingOrderType === 'commissary' || vendor?.order_type === 'online' || vendor?.order_type === 'instore';
@@ -580,7 +586,7 @@ export default function VendorOrders() {
         order_number: order.order_number,
         retail_location_id: selectedLocation,
         commissary_location_id: commissaryLocationId,
-        items: pendingOrderItems.map(i => ({
+        items: asArray(pendingOrderItems).map(i => ({
           item_id: i.item_id,
           item_name: i.item_name,
           unit_of_measure: i.unit_of_measure,
@@ -625,7 +631,7 @@ export default function VendorOrders() {
   };
 
   const createAllOrders = async () => {
-    for (const vendorId of Object.keys(carts)) {
+    for (const vendorId of Object.keys(asObject(carts))) {
       await createOrder(vendorId);
     }
     setView('history');
@@ -692,10 +698,11 @@ Address: ${loc?.address || '—'}</p>
     try {
       // Fetch company logo
       const settings = await base44.entities.BrandSettings.filter({ company_id: companyId });
-      const logoUrl = settings.length > 0 ? settings[0].logo_url : null;
+      const brandSettings = asArray(settings);
+      const logoUrl = brandSettings.length > 0 ? brandSettings[0].logo_url : null;
 
       // Resolve to/cc emails: use location-specific settings if available, else vendor defaults
-      const locSettings = (vendor.location_settings || []).find(s => s.location_id === emailDialog.loc?.id);
+      const locSettings = locationSettingsFor(vendor).find(s => s.location_id === emailDialog.loc?.id);
       const toEmail = locSettings?.order_email || vendor.default_order_email || vendor.email;
       const ccEmail = locSettings?.cc_email || vendor.default_cc_email || '';
 
@@ -728,7 +735,7 @@ Address: ${loc?.address || '—'}</p>
         // Send cancellation email first
         const vendor = vendors.find(v => v.id === deleteDialog.vendor_id);
         const loc = locations.find(l => l.id === deleteDialog.location_id);
-        const locSettings = (vendor?.location_settings || []).find(s => s.location_id === deleteDialog.location_id);
+        const locSettings = locationSettingsFor(vendor).find(s => s.location_id === deleteDialog.location_id);
         const toEmail = locSettings?.order_email || vendor?.default_order_email || vendor?.email;
         const ccEmail = locSettings?.cc_email || vendor?.default_cc_email || '';
         
@@ -778,7 +785,8 @@ Address: ${loc?.address || '—'}</p>
         
         // Fetch company logo
         const settings = await base44.entities.BrandSettings.filter({ company_id: companyId });
-        const logoUrl = settings.length > 0 ? settings[0].logo_url : null;
+        const brandSettings = asArray(settings);
+        const logoUrl = brandSettings.length > 0 ? brandSettings[0].logo_url : null;
         
         await base44.functions.invoke('cancelVendorOrderEmail', {
           orderId: deleteDialog.id,
@@ -837,7 +845,7 @@ Address: ${loc?.address || '—'}</p>
             <Button variant={view === 'cart' ? 'default' : 'outline'} onClick={() => setView('cart')}>
               <ShoppingCart className="w-4 h-4 mr-1" />
               New Order
-              {(() => { const count = Object.values(carts).reduce((sum, cart) => sum + asArray(cart).length, 0); return count > 0 ? <span className="ml-1 bg-white text-primary rounded-full text-xs w-5 h-5 flex items-center justify-center font-bold">{count}</span> : null; })()}
+              {(() => { const count = Object.values(asObject(carts)).reduce((sum, cart) => sum + asArray(cart).length, 0); return count > 0 ? <span className="ml-1 bg-white text-primary rounded-full text-xs w-5 h-5 flex items-center justify-center font-bold">{count}</span> : null; })()}
             </Button>
           </div>
         }
@@ -890,11 +898,11 @@ Address: ${loc?.address || '—'}</p>
               {/* Minimum order warning */}
               {(() => {
                 const vendor = emailDialog.vendor;
-                const locSettings = (vendor?.location_settings || []).find(s => s.location_id === emailDialog.loc?.id);
+                const locSettings = locationSettingsFor(vendor).find(s => s.location_id === emailDialog.loc?.id);
                 const minType = locSettings?.min_order_type || vendor?.default_min_order_type || 'none';
                 const minValue = parseFloat(locSettings?.min_order_value || vendor?.default_min_order_value || 0);
                 const total = asNumber(emailDialog.totalAmount);
-                const cartItems = emailDialog.items || [];
+                const cartItems = asArray(emailDialog.items);
 
                 if (minType === 'dollar' && minValue > 0 && total < minValue) {
                   return (
@@ -937,7 +945,7 @@ Address: ${loc?.address || '—'}</p>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {(emailDialog.items || []).map((item, i) => (
+                    {asArray(emailDialog.items).map((item, i) => (
                       <tr key={i}>
                         <td className="px-3 py-2">{item.item_name}</td>
                         <td className="px-3 py-2">{item.quantity_ordered} {item.unit_of_measure}</td>
@@ -1063,7 +1071,7 @@ Address: ${loc?.address || '—'}</p>
               }
               setEditDialog(null); 
             }}>Cancel</Button>
-            <Button onClick={updateDraftOrder} disabled={!selectedLocation || (carts[editDialog?.vendor_id] || []).filter(c => c.qty > 0).length === 0}>
+            <Button onClick={updateDraftOrder} disabled={!selectedLocation || asArray(carts[editDialog?.vendor_id]).filter(c => c.qty > 0).length === 0}>
               Save Changes
             </Button>
           </DialogFooter>
