@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -6,13 +6,23 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { base44 } from "@/api/base44Client";
 import { format } from "date-fns";
 import UserAvatar from "@/components/shared/UserAvatar";
-import { Check, Flag } from "lucide-react";
+import { Check, Flag, Minus, Plus } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+
+const DEFAULT_DRAWER_AMOUNT = 200;
+
+function parseConfiguredAmount(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
 
 export default function CashDepositTask({ task, completion, instanceId, locationId, companyId, user, onComplete, onFlag }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [date, setDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [expectedAmount, setExpectedAmount] = useState("");
   const [actualAmount, setActualAmount] = useState("");
+  const [countTouched, setCountTouched] = useState(false);
   const [notes, setNotes] = useState("");
   
   // Bills
@@ -31,6 +41,19 @@ export default function CashDepositTask({ task, completion, instanceId, location
   });
   
   const [submitting, setSubmitting] = useState(false);
+  const drawerCompanyId = user?.company_id || companyId;
+
+  const { data: location, isLoading: locationLoading } = useQuery({
+    queryKey: ["cash-deposit-location", locationId],
+    queryFn: () => base44.entities.Location.filter({ id: locationId }).then((rows) => rows[0] || null),
+    enabled: !!locationId,
+  });
+
+  const { data: company, isLoading: companyLoading } = useQuery({
+    queryKey: ["cash-deposit-company", drawerCompanyId],
+    queryFn: () => base44.entities.Company.filter({ id: drawerCompanyId }).then((rows) => rows[0] || null),
+    enabled: !!drawerCompanyId,
+  });
 
   const billValues = { hundred: 100, fifty: 50, twenty: 20, ten: 10, five: 5, two: 2, one: 1 };
   const coinValues = { dollar: 1, quarter: 0.25, dime: 0.1, nickel: 0.05, penny: 0.01 };
@@ -41,8 +64,112 @@ export default function CashDepositTask({ task, completion, instanceId, location
   const rolledTotal = Object.entries(rolledCoins).reduce((sum, [key, count]) => sum + (count * rolledValues[key]), 0);
   const totalCash = billsTotal + coinsTotal + rolledTotal;
   const actual = parseFloat(actualAmount) || 0;
-  const depositAmount = actual - 200;
+  const locationDrawerAmount = parseConfiguredAmount(location?.cash_drawer_amount);
+  const companyDrawerAmount = parseConfiguredAmount(company?.cash_drawer_amount);
+  const drawerAmount = locationDrawerAmount ?? companyDrawerAmount ?? DEFAULT_DRAWER_AMOUNT;
+  const drawerSettingsLoading = Boolean((locationId && locationLoading) || (drawerCompanyId && companyLoading));
+  const depositAmount = actual - drawerAmount;
   const overShort = actual - (parseFloat(expectedAmount) || 0);
+
+  useEffect(() => {
+    if (countTouched) {
+      setActualAmount(totalCash.toFixed(2));
+    }
+  }, [countTouched, totalCash]);
+
+  const parseCount = (value) => Math.max(0, parseInt(value, 10) || 0);
+
+  const updateCount = (setCounts, key, value) => {
+    setCountTouched(true);
+    setCounts((current) => ({ ...current, [key]: parseCount(value) }));
+  };
+
+  const adjustCount = (setCounts, key, delta) => {
+    setCountTouched(true);
+    setCounts((current) => ({
+      ...current,
+      [key]: Math.max(0, (current[key] || 0) + delta),
+    }));
+  };
+
+  const preventNegativeEntry = (event) => {
+    if (["-", "+", "e", "E"].includes(event.key)) {
+      event.preventDefault();
+    }
+  };
+
+  const CountRow = ({ label, detail, count, subtotal, onChange, onDecrement, onIncrement }) => (
+    <div className="rounded-lg border border-border bg-background p-3 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold leading-tight">{label}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{detail}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-10 w-10 rounded-full"
+            onClick={onDecrement}
+            disabled={count <= 0}
+            aria-label={`Decrease ${label}`}
+          >
+            <Minus className="h-4 w-4" />
+          </Button>
+          <Input
+            type="number"
+            min="0"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            value={count}
+            onChange={(event) => onChange(event.target.value)}
+            onKeyDown={preventNegativeEntry}
+            className="h-11 w-16 rounded-lg text-center text-base font-semibold [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-10 w-10 rounded-full"
+            onClick={onIncrement}
+            aria-label={`Increase ${label}`}
+          >
+            <Plus className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+      <div className="mt-2 text-right text-xs font-medium text-muted-foreground">
+        ${subtotal.toFixed(2)}
+      </div>
+    </div>
+  );
+
+  const billOptions = [
+    { key: "hundred", label: "$100 bills", value: billValues.hundred },
+    { key: "fifty", label: "$50 bills", value: billValues.fifty },
+    { key: "twenty", label: "$20 bills", value: billValues.twenty },
+    { key: "ten", label: "$10 bills", value: billValues.ten },
+    { key: "five", label: "$5 bills", value: billValues.five },
+    { key: "two", label: "$2 bills", value: billValues.two },
+    { key: "one", label: "$1 bills", value: billValues.one },
+  ];
+
+  const coinOptions = [
+    { key: "dollar", label: "$1 coins", value: coinValues.dollar },
+    { key: "quarter", label: "Quarters", value: coinValues.quarter },
+    { key: "dime", label: "Dimes", value: coinValues.dime },
+    { key: "nickel", label: "Nickels", value: coinValues.nickel },
+    { key: "penny", label: "Pennies", value: coinValues.penny },
+  ];
+
+  const rolledCoinOptions = [
+    { key: "dollars", label: "Dollar rolls", value: rolledValues.dollars },
+    { key: "quarters", label: "Quarter rolls", value: rolledValues.quarters },
+    { key: "dimes", label: "Dime rolls", value: rolledValues.dimes },
+    { key: "nickels", label: "Nickel rolls", value: rolledValues.nickels },
+    { key: "pennies", label: "Penny rolls", value: rolledValues.pennies },
+  ];
 
   const handleSubmit = async () => {
     if (!expectedAmount || !actualAmount) return;
@@ -57,6 +184,7 @@ export default function CashDepositTask({ task, completion, instanceId, location
       initials: (user.full_name || user.email).split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 3),
       expected_amount: parseFloat(expectedAmount),
       actual_amount: actual,
+      drawer_amount: drawerAmount,
       deposit_amount: depositAmount,
       over_short: overShort,
       bills,
@@ -92,7 +220,7 @@ export default function CashDepositTask({ task, completion, instanceId, location
             </Button>
           )}
           {!isCompleted && (
-            <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive" onClick={() => onFlag(task.id)}>
+            <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive" onClick={() => onFlag && onFlag(task.id)}>
               <Flag className="h-4 w-4" />
             </Button>
           )}
@@ -109,7 +237,7 @@ export default function CashDepositTask({ task, completion, instanceId, location
       )}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-h-[90dvh] overflow-y-auto p-4 sm:max-w-2xl sm:p-6">
           <DialogHeader>
             <DialogTitle>Cash Deposit Receipt</DialogTitle>
           </DialogHeader>
@@ -129,18 +257,36 @@ export default function CashDepositTask({ task, completion, instanceId, location
             {/* Amounts */}
             <div className="space-y-3 border-b pb-4">
               <h3 className="font-semibold text-sm text-primary">Amounts</h3>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">Expected Amount ($)</label>
-                  <Input type="number" step="0.01" value={expectedAmount} onChange={(e) => setExpectedAmount(e.target.value)} />
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={expectedAmount}
+                    onChange={(e) => setExpectedAmount(e.target.value)}
+                    onKeyDown={preventNegativeEntry}
+                    className="h-11 text-base"
+                  />
                 </div>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">Actual Amount ($)</label>
-                  <Input type="number" step="0.01" value={actualAmount} onChange={(e) => setActualAmount(e.target.value)} />
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={actualAmount}
+                    onChange={(e) => setActualAmount(e.target.value)}
+                    onKeyDown={preventNegativeEntry}
+                    className="h-11 text-base font-semibold"
+                  />
                 </div>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">Over/Short ($)</label>
-                  <div className={`px-3 py-2 rounded-md border text-sm font-medium ${overShort >= 0 ? "text-success" : "text-destructive"}`}>
+                  <div className={`h-11 px-3 py-2 rounded-md border text-sm font-medium flex items-center ${overShort >= 0 ? "text-success" : "text-destructive"}`}>
                     {overShort >= 0 ? "+" : ""}{overShort.toFixed(2)}
                   </div>
                 </div>
@@ -153,27 +299,18 @@ export default function CashDepositTask({ task, completion, instanceId, location
                 <h3 className="font-semibold text-sm text-primary">Bills</h3>
                 <span className="text-sm font-medium">${billsTotal.toFixed(2)}</span>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { key: "hundred", label: "$100" },
-                  { key: "fifty", label: "$50" },
-                  { key: "twenty", label: "$20" },
-                  { key: "ten", label: "$10" },
-                  { key: "five", label: "$5" },
-                  { key: "two", label: "$2" },
-                  { key: "one", label: "$1" }
-                ].map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs w-8 text-muted-foreground">{label}</span>
-                    <Input
-                      type="number"
-                      min="0"
-                      value={bills[key]}
-                      onChange={(e) => setBills({ ...bills, [key]: parseInt(e.target.value) || 0 })}
-                      className="h-8"
-                    />
-                    <span className="text-xs w-12 text-right">${(bills[key] * billValues[key]).toFixed(2)}</span>
-                  </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {billOptions.map(({ key, label, value }) => (
+                  <CountRow
+                    key={key}
+                    label={label}
+                    detail={`$${value.toFixed(0)} each`}
+                    count={bills[key]}
+                    subtotal={bills[key] * value}
+                    onChange={(nextValue) => updateCount(setBills, key, nextValue)}
+                    onDecrement={() => adjustCount(setBills, key, -1)}
+                    onIncrement={() => adjustCount(setBills, key, 1)}
+                  />
                 ))}
               </div>
             </div>
@@ -184,25 +321,18 @@ export default function CashDepositTask({ task, completion, instanceId, location
                 <h3 className="font-semibold text-sm text-primary">Coins</h3>
                 <span className="text-sm font-medium">${coinsTotal.toFixed(2)}</span>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { key: "dollar", label: "$1" },
-                  { key: "quarter", label: "$0.25" },
-                  { key: "dime", label: "$0.10" },
-                  { key: "nickel", label: "$0.05" },
-                  { key: "penny", label: "$0.01" }
-                ].map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs w-12 text-muted-foreground">{label}</span>
-                    <Input
-                      type="number"
-                      min="0"
-                      value={coins[key]}
-                      onChange={(e) => setCoins({ ...coins, [key]: parseInt(e.target.value) || 0 })}
-                      className="h-8"
-                    />
-                    <span className="text-xs w-12 text-right">${(coins[key] * coinValues[key]).toFixed(2)}</span>
-                  </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {coinOptions.map(({ key, label, value }) => (
+                  <CountRow
+                    key={key}
+                    label={label}
+                    detail={`$${value.toFixed(2)} each`}
+                    count={coins[key]}
+                    subtotal={coins[key] * value}
+                    onChange={(nextValue) => updateCount(setCoins, key, nextValue)}
+                    onDecrement={() => adjustCount(setCoins, key, -1)}
+                    onIncrement={() => adjustCount(setCoins, key, 1)}
+                  />
                 ))}
               </div>
             </div>
@@ -213,25 +343,18 @@ export default function CashDepositTask({ task, completion, instanceId, location
                 <h3 className="font-semibold text-sm text-primary">Rolled Coins</h3>
                 <span className="text-sm font-medium">${rolledTotal.toFixed(2)}</span>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { key: "dollars", label: "Dollars ($25)" },
-                  { key: "quarters", label: "Quarters ($10)" },
-                  { key: "dimes", label: "Dimes ($5)" },
-                  { key: "nickels", label: "Nickels ($2)" },
-                  { key: "pennies", label: "Pennies ($0.50)" }
-                ].map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground flex-1">{label}</span>
-                    <Input
-                      type="number"
-                      min="0"
-                      value={rolledCoins[key]}
-                      onChange={(e) => setRolledCoins({ ...rolledCoins, [key]: parseInt(e.target.value) || 0 })}
-                      className="h-8 w-16"
-                    />
-                    <span className="text-xs w-12 text-right">${(rolledCoins[key] * rolledValues[key]).toFixed(2)}</span>
-                  </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {rolledCoinOptions.map(({ key, label, value }) => (
+                  <CountRow
+                    key={key}
+                    label={label}
+                    detail={`$${value.toFixed(2)} per roll`}
+                    count={rolledCoins[key]}
+                    subtotal={rolledCoins[key] * value}
+                    onChange={(nextValue) => updateCount(setRolledCoins, key, nextValue)}
+                    onDecrement={() => adjustCount(setRolledCoins, key, -1)}
+                    onIncrement={() => adjustCount(setRolledCoins, key, 1)}
+                  />
                 ))}
               </div>
             </div>
@@ -239,11 +362,11 @@ export default function CashDepositTask({ task, completion, instanceId, location
             {/* Totals */}
             <div className="space-y-2 bg-muted/50 p-4 rounded-lg">
               <div className="flex justify-between text-sm">
-                <span>Total Cash:</span>
+                <span>Counted Cash:</span>
                 <span className="font-semibold">${totalCash.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-sm">
-                <span>Deposit Amount (Actual - $200 drawer):</span>
+                <span>Deposit Amount (Actual - ${drawerAmount.toFixed(2)} drawer):</span>
                 <span className="font-semibold">${depositAmount.toFixed(2)}</span>
               </div>
             </div>
@@ -260,11 +383,12 @@ export default function CashDepositTask({ task, completion, instanceId, location
             </div>
           </div>
 
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setDialogOpen(false)} className="w-full sm:w-auto">Cancel</Button>
             <Button
               onClick={handleSubmit}
-              disabled={!expectedAmount || !actualAmount || submitting}
+              disabled={!expectedAmount || !actualAmount || submitting || drawerSettingsLoading}
+              className="w-full sm:w-auto"
             >
               {submitting ? "Saving..." : "Complete Deposit"}
             </Button>

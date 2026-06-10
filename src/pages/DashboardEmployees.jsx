@@ -128,33 +128,48 @@ export default function DashboardEmployees() {
   };
 
   const handleInvite = async () => {
-    if (!inviteEmail.trim()) return;
+    const email = inviteEmail.trim();
+    if (!email) return;
     setInviting(true);
-    await base44.users.inviteUser(inviteEmail.trim(), inviteRole === "admin" ? "admin" : "user");
-    await base44.entities.PendingInvite.create({
-      email: inviteEmail.trim(),
-      name: inviteName.trim(),
-      role: inviteRole,
-      company_id: currentUser.company_id,
-      assigned_locations: inviteLocations,
-      invited_by: currentUser?.email,
-    });
-    toast.success(`Invite sent to ${inviteEmail.trim()}`);
-    setInviteEmail("");
-    setInviteName("");
-    setInviteRole("employee");
-    setInviteLocations([]);
-    setInviteOpen(false);
-    setInviting(false);
-    queryClient.invalidateQueries({ queryKey: ["all-users"] });
-    queryClient.invalidateQueries({ queryKey: ["pending-invites"] });
+    try {
+      await base44.users.inviteUser({
+        email,
+        name: inviteName.trim(),
+        role: inviteRole,
+        assigned_locations: inviteLocations,
+      });
+      toast.success(`Invite sent to ${email}`);
+      setInviteEmail("");
+      setInviteName("");
+      setInviteRole("employee");
+      setInviteLocations([]);
+      setInviteOpen(false);
+    } catch (error) {
+      toast.error(error.message || "Invite could not be sent");
+    } finally {
+      setInviting(false);
+      queryClient.invalidateQueries({ queryKey: ["all-users"] });
+      queryClient.invalidateQueries({ queryKey: ["pending-invites"] });
+    }
   };
 
   const handleResend = async (invite) => {
     setResending(invite.id);
-    await base44.users.inviteUser(invite.email, invite.role === "admin" ? "admin" : "user");
-    toast.success(`Invite resent to ${invite.email}`);
-    setResending(null);
+    try {
+      await base44.users.inviteUser({
+        email: invite.email,
+        name: invite.name || "",
+        role: invite.role || "employee",
+        assigned_locations: invite.assigned_locations || [],
+        resend: true,
+      });
+      toast.success(`Invite resent to ${invite.email}`);
+    } catch (error) {
+      toast.error(error.message || "Invite could not be resent");
+    } finally {
+      setResending(null);
+      queryClient.invalidateQueries({ queryKey: ["pending-invites"] });
+    }
   };
 
   const handleDeletePending = async (invite) => {

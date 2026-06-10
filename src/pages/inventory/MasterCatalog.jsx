@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
+import { useAuth } from '@/lib/AuthContext';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { Plus, Search, Pencil, Trash2, Package, Archive, Combine, MoreVertical, FileDown, FileSpreadsheet, FileText, Upload, Download, CheckSquare, Square, FolderOpen } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Package, Archive, Combine, MoreVertical, FileDown, FileSpreadsheet, FileText, Upload, Download, CheckSquare, Square, FolderOpen, Check, ChevronsUpDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import PageHeader from '@/components/layout/PageHeader';
@@ -16,10 +17,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Label } from '@/components/ui/label';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ChevronUp, ChevronDown } from 'lucide-react';
+import { CATEGORY_GROUPS, categoryForItem, categoryGroupLabel, mergeInventoryCategories } from '@/lib/inventoryCategories';
 
 const EMPTY = { name: '', sku: '', category: '', unit_of_measure: '', unit_cost: '', is_commissary_item: false, commissary_price: '', description: '', vendor_id: '', is_active: true, purchase_options: [], product_group_id: null, group_sort_order: 0 };
 const ITEM_DRAFT_KEY = 'taskr.inventory.catalog.itemDraft';
+
+const lowerName = (name) => String(name || '').trim().toLowerCase();
 
 const UOM_TO_BASE = {
   'fl-oz': { family: 'volume', toBase: 1 },
@@ -43,10 +49,60 @@ const convertPrice = (pricePerFromUOM, fromUOM, toUOM) => {
   return pricePerFromUOM / (from.toBase / to.toBase);
 };
 
+function SubcategoryPicker({ value, options = [], onChange, disabled }) {
+  const [open, setOpen] = useState(false);
+  const sortedOptions = [...options];
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="mt-1 h-10 w-full justify-between px-3 font-normal"
+          disabled={disabled || sortedOptions.length === 0}
+        >
+          <span className={`truncate ${value ? 'text-foreground' : 'text-muted-foreground'}`}>
+            {value || (sortedOptions.length ? 'Choose subcategory' : 'No subcategories available')}
+          </span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[min(420px,calc(100vw-2rem))] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search subcategories..." />
+          <CommandList>
+            <CommandEmpty>No subcategory found.</CommandEmpty>
+            <CommandGroup>
+              {sortedOptions.map((name) => (
+                <CommandItem
+                  key={name}
+                  value={name}
+                  onSelect={() => {
+                    onChange(name);
+                    setOpen(false);
+                  }}
+                >
+                  <Check className={`h-4 w-4 ${value === name ? 'opacity-100' : 'opacity-0'}`} />
+                  <span className="truncate">{name}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export default function MasterCatalog() {
+  const { companyId } = useAuth();
   const [items, setItems] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [inventoryCategories, setInventoryCategories] = useState([]);
   const [search, setSearch] = useState('');
   const [dialog, setDialog] = useState(false);
   const [form, setForm] = useState(EMPTY);
@@ -65,10 +121,15 @@ export default function MasterCatalog() {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [groupByOpen, setGroupByOpen] = useState(false);
   const [assignToGroupOpen, setAssignToGroupOpen] = useState(false);
+  const [bulkCategoryOpen, setBulkCategoryOpen] = useState(false);
+  const [bulkCategoryMain, setBulkCategoryMain] = useState('ingredient');
+  const [bulkSubcategory, setBulkSubcategory] = useState('');
+  const [bulkCategorySaving, setBulkCategorySaving] = useState(false);
   const [groupNames, setGroupNames] = useState({});
   const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState('asc');
   const [vendorFilter, setVendorFilter] = useState('all');
+  const [mainCategoryFilter, setMainCategoryFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [expandedGroups, setExpandedGroups] = useState(new Set());
   const fileInputRef = useRef(null);
@@ -76,15 +137,17 @@ export default function MasterCatalog() {
 
   const load = async () => {
     try {
-      const [itms, vends, locs, groups] = await Promise.all([
+      const [itms, vends, locs, groups, cats] = await Promise.all([
         base44.entities.InventoryItem.list(),
         base44.entities.Vendor.list(),
         base44.entities.Location.list(),
         base44.entities.ProductGroup.list(),
+        companyId ? base44.entities.InventoryCategory.filter({ company_id: companyId }).catch(() => []) : Promise.resolve([]),
       ]);
       setItems(itms);
       setVendors(vends);
       setLocations(locs);
+      setInventoryCategories(cats);
       
       // Create group name lookup map
       const groupMap = {};
@@ -106,7 +169,7 @@ export default function MasterCatalog() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [companyId]);
 
   useEffect(() => {
     if (loading || restoredDraftRef.current || dialog) return;
@@ -245,6 +308,52 @@ export default function MasterCatalog() {
     setDeleteConfirmOpen(false);
     setDeleteConfirmText('');
     toast.success(`Deleted ${selected.size} items`);
+  };
+
+  const openBulkCategoryDialog = () => {
+    const selectedItems = items.filter(item => selected.has(item.id));
+    const firstCategory = selectedItems[0]?.category || '';
+    const sameSubcategory = firstCategory && selectedItems.every(item => (item.category || '') === firstCategory);
+    const existingCategory = categorySettings.find(category => lowerName(category.name) === lowerName(firstCategory));
+    const defaultMain = existingCategory?.main_category || (mainCategoryFilter !== 'all' ? mainCategoryFilter : 'ingredient');
+
+    setBulkCategoryMain(defaultMain);
+    setBulkSubcategory(sameSubcategory ? firstCategory : '');
+    setBulkCategoryOpen(true);
+  };
+
+  const applyBulkCategory = async () => {
+    const name = bulkSubcategory.trim();
+    const selectedIds = Array.from(selected);
+    if (!selectedIds.length) {
+      toast.error('Select at least one item first');
+      return;
+    }
+    if (!name) {
+      toast.error('Subcategory is required');
+      return;
+    }
+    const selectedCategory = activeCategorySettings.find(category =>
+      category.main_category === bulkCategoryMain && lowerName(category.name) === lowerName(name)
+    );
+    if (!selectedCategory) {
+      toast.error('Choose a subcategory from Inventory Settings');
+      return;
+    }
+
+    setBulkCategorySaving(true);
+    try {
+      await Promise.all(selectedIds.map(id => base44.entities.InventoryItem.update(id, { category: selectedCategory.name })));
+      toast.success(`Updated ${selectedIds.length} catalog items`);
+      await load();
+      setSelected(new Set());
+      setBulkCategoryOpen(false);
+      setBulkSubcategory('');
+    } catch (error) {
+      toast.error(error.message || 'Bulk category update failed');
+    } finally {
+      setBulkCategorySaving(false);
+    }
   };
 
   const mergeDuplicates = async () => {
@@ -419,15 +528,29 @@ export default function MasterCatalog() {
     }
   };
 
+  const categorySettings = mergeInventoryCategories(inventoryCategories, items);
+  const activeCategorySettings = categorySettings.filter(category => category.is_active !== false);
+  const mainCategoryOptions = CATEGORY_GROUPS.filter(group =>
+    activeCategorySettings.some(category => category.main_category === group.value)
+  );
+  const itemMainCategory = (item) => {
+    const category = categoryForItem(categorySettings, item);
+    if (!category || category.is_active === false) return 'ingredient';
+    return category.main_category || 'ingredient';
+  };
+
   // Group items by product_group_id
   const itemsWithGroups = items.filter(i => {
+    const mainCategory = itemMainCategory(i);
     const matchesSearch = i.name?.toLowerCase().includes(search.toLowerCase()) ||
       i.category?.toLowerCase().includes(search.toLowerCase()) ||
+      categoryGroupLabel(mainCategory).toLowerCase().includes(search.toLowerCase()) ||
       i.sku?.toLowerCase().includes(search.toLowerCase());
     const matchesArchive = showArchived ? !i.is_active : i.is_active;
     const matchesVendor = vendorFilter === 'all' || (i.purchase_options || []).some(o => o.vendor_name === vendorFilter);
+    const matchesMainCategory = mainCategoryFilter === 'all' || mainCategory === mainCategoryFilter;
     const matchesCategory = categoryFilter === 'all' || i.category === categoryFilter;
-    return matchesSearch && matchesArchive && matchesVendor && matchesCategory;
+    return matchesSearch && matchesArchive && matchesVendor && matchesMainCategory && matchesCategory;
   });
 
   const groupedItems = {};
@@ -477,7 +600,14 @@ export default function MasterCatalog() {
     setExpandedGroups(next);
   };
 
-  const categories = [...new Set(items.map(i => i.category).filter(Boolean))];
+  const categories = activeCategorySettings
+    .filter(category => mainCategoryFilter === 'all' || category.main_category === mainCategoryFilter)
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name))
+    .map(category => category.name);
+  const bulkSubcategoryOptions = activeCategorySettings
+    .filter(category => category.main_category === bulkCategoryMain)
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name))
+    .map(category => category.name);
   const uniqueVendors = [...new Set(items.flatMap(i => (i.purchase_options || []).map(o => o.vendor_name).filter(Boolean)))].sort();
 
   const getPreferredOption = (item) => {
@@ -573,11 +703,15 @@ export default function MasterCatalog() {
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" className="ml-2">
-                    <span className="text-sm">{selected.size} selected</span>
+                    <span className="text-sm">Bulk Actions ({selected.size})</span>
                     <MoreVertical className="w-4 h-4 ml-1" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuItem onClick={openBulkCategoryDialog}>
+                    <FolderOpen className="w-4 h-4 mr-2" />
+                    Change Category
+                  </DropdownMenuItem>
                   {showArchived ? (
                     <DropdownMenuItem onClick={bulkUnarchive}>
                       <CheckSquare className="w-4 h-4 mr-2" />
@@ -630,12 +764,23 @@ export default function MasterCatalog() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="Category" />
+          <Select value={mainCategoryFilter} onValueChange={(value) => { setMainCategoryFilter(value); setCategoryFilter('all'); }}>
+            <SelectTrigger className="w-44">
+              <SelectValue placeholder="Upper Category" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Categories</SelectItem>
+              <SelectItem value="all">All Upper Categories</SelectItem>
+              {mainCategoryOptions.map(group => (
+                <SelectItem key={group.value} value={group.value}>{group.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="Subcategory" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Subcategories</SelectItem>
               {categories.map(c => (
                 <SelectItem key={c} value={c}>{c}</SelectItem>
               ))}
@@ -678,7 +823,7 @@ export default function MasterCatalog() {
                             </button>
                             <div className="flex-1">
                               <p className="font-semibold text-sm">{item.name}</p>
-                              <p className="text-xs text-muted-foreground">{item.category || '—'} · {item.unit_of_measure}</p>
+                              <p className="text-xs text-muted-foreground">{categoryGroupLabel(itemMainCategory(item))} / {item.category || '—'} · {item.unit_of_measure}</p>
                               {groupVendors.length > 0 && <p className="text-xs text-muted-foreground mt-0.5">{groupVendors.join(', ')}</p>}
                             </div>
                           </div>
@@ -716,7 +861,7 @@ export default function MasterCatalog() {
                     <div className="flex items-center gap-1">Item Name {sortBy === 'name' && (sortOrder === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
                   </th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide cursor-pointer hover:bg-muted/30" onClick={() => { setSortBy('category'); setSortOrder(sortBy === 'category' && sortOrder === 'asc' ? 'desc' : 'asc'); }}>
-                    <div className="flex items-center gap-1">Category {sortBy === 'category' && (sortOrder === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
+                    <div className="flex items-center gap-1">Subcategory {sortBy === 'category' && (sortOrder === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}</div>
                   </th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">UOM</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Purchase Options</th>
@@ -773,7 +918,7 @@ export default function MasterCatalog() {
         saving={saving}
         vendors={vendors}
         locations={locations}
-        categories={categories}
+        categories={activeCategorySettings}
         draftKey={ITEM_DRAFT_KEY}
       />
 
@@ -817,6 +962,45 @@ export default function MasterCatalog() {
             onConfirm={confirmSplit}
             splitting={splitting}
           />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkCategoryOpen} onOpenChange={setBulkCategoryOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Change Category</DialogTitle>
+            <DialogDescription>Apply a category and subcategory to {selected.size} selected items.</DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <div>
+              <Label>Category</Label>
+              <Select value={bulkCategoryMain} onValueChange={(value) => { setBulkCategoryMain(value); setBulkSubcategory(''); }}>
+                <SelectTrigger className="mt-1">
+                  <SelectValue placeholder="Choose category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {CATEGORY_GROUPS.map(group => (
+                    <SelectItem key={group.value} value={group.value}>{group.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Subcategory</Label>
+              <SubcategoryPicker
+                value={bulkSubcategory}
+                options={bulkSubcategoryOptions}
+                onChange={setBulkSubcategory}
+                disabled={bulkCategorySaving}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkCategoryOpen(false)} disabled={bulkCategorySaving}>Cancel</Button>
+            <Button onClick={applyBulkCategory} disabled={bulkCategorySaving || selected.size === 0 || !bulkSubcategory.trim()}>
+              {bulkCategorySaving ? 'Saving...' : 'Apply Changes'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

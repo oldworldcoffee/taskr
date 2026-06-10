@@ -4,13 +4,19 @@ import { TrendingUp, AlertTriangle, CheckCircle, HelpCircle } from 'lucide-react
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 
+const asArray = (value) => Array.isArray(value) ? value : [];
+const asNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+};
+
 export default function AIReviewDialog({ open, onOpenChange, orderItems, locationId, onConfirm }) {
   const [review, setReview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const loadReview = async () => {
-    if (!orderItems || orderItems.length === 0) return;
+    if (asArray(orderItems).length === 0) return;
     
     setLoading(true);
     setError(null);
@@ -22,7 +28,7 @@ export default function AIReviewDialog({ open, onOpenChange, orderItems, locatio
       });
       
       if (response.data && response.data.success) {
-        setReview(response.data.review);
+        setReview(asArray(response.data.review));
       } else {
         setError('Failed to load review');
       }
@@ -34,7 +40,7 @@ export default function AIReviewDialog({ open, onOpenChange, orderItems, locatio
   };
 
   React.useEffect(() => {
-    if (open && orderItems?.length > 0) {
+    if (open && asArray(orderItems).length > 0) {
       loadReview();
     }
   }, [open]);
@@ -61,6 +67,9 @@ export default function AIReviewDialog({ open, onOpenChange, orderItems, locatio
     }
   };
 
+  const reviewItems = asArray(review);
+  const canConfirm = asArray(orderItems).length > 0 && !loading;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
@@ -81,13 +90,13 @@ export default function AIReviewDialog({ open, onOpenChange, orderItems, locatio
             <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-center">
               <p className="text-sm text-red-700">{error}</p>
             </div>
-          ) : !review || review.length === 0 ? (
+          ) : reviewItems.length === 0 ? (
             <div className="text-center text-muted-foreground py-8">
               <p>No items to review</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {review.map((item, idx) => (
+              {reviewItems.map((item, idx) => (
                 <div
                   key={idx}
                   className={`rounded-lg border p-4 ${getStatusColor(item.status)}`}
@@ -113,7 +122,7 @@ export default function AIReviewDialog({ open, onOpenChange, orderItems, locatio
                         </div>
                         <div>
                           <span className="text-muted-foreground">Avg Historical:</span>
-                          <span className="ml-1 font-medium">{item.avg_historical_order.toFixed(1)}</span>
+                          <span className="ml-1 font-medium">{asNumber(item.avg_historical_order).toFixed(1)}</span>
                         </div>
                       </div>
 
@@ -137,7 +146,7 @@ export default function AIReviewDialog({ open, onOpenChange, orderItems, locatio
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Back to Edit
           </Button>
-          <Button onClick={onConfirm} disabled={!review || review.length === 0}>
+          <Button onClick={onConfirm} disabled={!canConfirm}>
             Confirm and Send
           </Button>
         </DialogFooter>

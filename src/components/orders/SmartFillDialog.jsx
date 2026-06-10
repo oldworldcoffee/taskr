@@ -4,6 +4,12 @@ import { Sparkles, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 
+const asArray = (value) => Array.isArray(value) ? value : [];
+const asNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+};
+
 export default function SmartFillDialog({ open, onOpenChange, locationId, onConfirm }) {
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -35,6 +41,11 @@ export default function SmartFillDialog({ open, onOpenChange, locationId, onConf
       calculateSmartPars();
     }
   }, [open]);
+
+  const resultRows = asArray(results?.results);
+  const updatedRows = resultRows.filter(r => r.status === 'updated');
+  const noHistoryCount = resultRows.filter(r => r.status === 'no_history').length;
+  const itemsUpdated = asNumber(results?.items_updated);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -71,24 +82,24 @@ export default function SmartFillDialog({ open, onOpenChange, locationId, onConf
               <div className="bg-muted/50 rounded-lg p-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium">Items Processed</span>
-                  <span className="text-lg font-bold">{results.items_processed}</span>
+                  <span className="text-lg font-bold">{asNumber(results.items_processed)}</span>
                 </div>
                 <div className="flex items-center justify-between mt-2">
                   <span className="text-sm font-medium">Items Updated</span>
-                  <span className="text-lg font-bold text-green-600">{results.items_updated}</span>
+                  <span className="text-lg font-bold text-green-600">{itemsUpdated}</span>
                 </div>
               </div>
 
-              {results.results?.some(r => r.status === 'no_history') && (
+              {noHistoryCount > 0 && (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
                   <p className="text-xs text-amber-800">
-                    <strong>Note:</strong> {results.results.filter(r => r.status === 'no_history').length} items have no order history and require manual par settings.
+                    <strong>Note:</strong> {noHistoryCount} items have no order history and require manual par settings.
                   </p>
                 </div>
               )}
 
               <div className="max-h-60 overflow-y-auto space-y-2">
-                {results.results?.filter(r => r.status === 'updated').slice(0, 10).map((item, idx) => (
+                {updatedRows.slice(0, 10).map((item, idx) => (
                   <div key={idx} className="flex items-center justify-between text-sm border-b border-border pb-2 last:border-0">
                     <span className="font-medium truncate flex-1">{item.item_name}</span>
                     <div className="flex items-center gap-3 text-xs">
@@ -97,9 +108,9 @@ export default function SmartFillDialog({ open, onOpenChange, locationId, onConf
                     </div>
                   </div>
                 ))}
-                {results.results?.filter(r => r.status === 'updated').length > 10 && (
+                {updatedRows.length > 10 && (
                   <p className="text-xs text-muted-foreground text-center pt-2">
-                    +{results.results.filter(r => r.status === 'updated').length - 10} more items updated
+                    +{updatedRows.length - 10} more items updated
                   </p>
                 )}
               </div>
@@ -111,7 +122,7 @@ export default function SmartFillDialog({ open, onOpenChange, locationId, onConf
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Close
           </Button>
-          {results?.items_updated > 0 && (
+          {itemsUpdated > 0 && (
             <Button onClick={() => { onConfirm(results); onOpenChange(false); }}>
               Use Smart Pars for Fill
             </Button>

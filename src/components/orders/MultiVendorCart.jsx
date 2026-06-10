@@ -9,6 +9,21 @@ import VariantSelectionDialog from './VariantSelectionDialog';
 import { getVendorCommissaryLocationId, isCommissaryLocation } from '@/lib/inventoryLocations';
 import { getOrderUnit, pluralizeUnit } from '@/lib/inventoryOrderUnits';
 
+const asArray = (value) => Array.isArray(value) ? value : [];
+const asObject = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+const asNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+};
+const money = (value) => asNumber(value).toFixed(2);
+const lineTotal = (item) => {
+  if (item?.total_cost !== undefined && item?.total_cost !== null && item.total_cost !== '') {
+    return asNumber(item.total_cost);
+  }
+  return asNumber(item?.qty ?? item?.quantity_ordered) * asNumber(item?.unit_cost);
+};
+const cartTotal = (cart) => asArray(cart).reduce((sum, item) => sum + lineTotal(item), 0);
+
 export default function MultiVendorCart({
   locations, vendors, items, locInv,
   selectedLocation, selectedVendor,
@@ -17,6 +32,12 @@ export default function MultiVendorCart({
   onAddToCart, onUpdateQty, onRemove, onClearCart,
   onFillToPar, onCreateOrder, onCreateAllOrders,
 }) {
+  locations = asArray(locations);
+  vendors = asArray(vendors);
+  items = asArray(items);
+  locInv = asArray(locInv);
+  carts = asObject(carts);
+
   const selectedLoc = locations.find(l => l.id === selectedLocation);
   const selectedIsCommissary = isCommissaryLocation(selectedLoc);
 
@@ -116,8 +137,10 @@ export default function MultiVendorCart({
       }
     }
     
-    if (search && !item.name.toLowerCase().includes(search.toLowerCase()) &&
-        !(item.category || '').toLowerCase().includes(search.toLowerCase())) return acc;
+    const itemName = item.name || item.item_name || '';
+    const itemCategory = item.category || '';
+    if (search && !itemName.toLowerCase().includes(search.toLowerCase()) &&
+        !itemCategory.toLowerCase().includes(search.toLowerCase())) return acc;
     if (categoryFilter !== 'all' && item.category !== categoryFilter) return acc;
     
     acc.push(item);
@@ -128,9 +151,10 @@ export default function MultiVendorCart({
   const itemsWithGroups = groupedCatalogItems.reduce((acc, item) => {
     if (item.product_group_id) {
       if (!acc.groups[item.product_group_id]) {
+        const itemName = item.name || item.item_name || 'Unnamed item';
         acc.groups[item.product_group_id] = {
           group_id: item.product_group_id,
-          name: item.name.split(' - ').slice(0, -1).join(' - ') || item.name,
+          name: itemName.split(' - ').slice(0, -1).join(' - ') || itemName,
           items: [],
         };
       }
@@ -199,8 +223,9 @@ export default function MultiVendorCart({
     return (
       <div className={collapsed ? "space-y-2" : "w-96 flex flex-col gap-3 overflow-y-auto"}>
         {Object.entries(carts || {}).filter(([vendorId]) => vendorId).map(([vendorId, vendorCart]) => {
-          const itemsInCart = vendorCart.filter(c => c.qty > 0);
-          const total = vendorCart.reduce((s, i) => s + i.total_cost, 0);
+          const cartRows = asArray(vendorCart);
+          const itemsInCart = cartRows.filter(c => asNumber(c.qty) > 0);
+          const total = cartTotal(cartRows);
           const isExpanded = !collapsed || expandedCarts[vendorId];
 
           return (
@@ -216,7 +241,7 @@ export default function MultiVendorCart({
                     {itemsInCart.length > 0 && (
                       <span className="bg-primary text-primary-foreground rounded-full text-xs w-5 h-5 flex items-center justify-center font-bold">{itemsInCart.length}</span>
                     )}
-                    <span className="text-xs text-muted-foreground ml-1">${total.toFixed(2)}</span>
+                    <span className="text-xs text-muted-foreground ml-1">${money(total)}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     {collapsed && <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${isExpanded ? 'rotate-180' : ''}`} />}
@@ -231,14 +256,14 @@ export default function MultiVendorCart({
                     {itemsInCart.length === 0 ? (
                       <div className="p-4 text-center text-xs text-muted-foreground">No items</div>
                     ) : itemsInCart.map((item) => {
-                      const originalIdx = vendorCart.findIndex(c => c.item_id === item.item_id);
+                      const originalIdx = cartRows.findIndex(c => c.item_id === item.item_id);
                       const unitLabel = getCartUnitLabel(item, vendorId);
                       return (
                         <div key={item.item_id} className="p-2 flex flex-col gap-1.5">
                           <div className="flex items-start justify-between gap-1">
                             <div className="flex-1 min-w-0">
-                              <p className="text-xs font-medium leading-tight truncate">{item.item_name}</p>
-                              <p className="text-xs text-muted-foreground">${item.unit_cost.toFixed(2)} / {unitLabel}</p>
+                              <p className="text-xs font-medium leading-tight truncate">{item.item_name || 'Unnamed item'}</p>
+                              <p className="text-xs text-muted-foreground">${money(item.unit_cost)} / {unitLabel}</p>
                             </div>
                             <button onClick={() => onRemove(vendorId, originalIdx)} className="text-muted-foreground hover:text-destructive transition-colors p-0.5">
                               <X className="w-3.5 h-3.5" />
@@ -246,18 +271,18 @@ export default function MultiVendorCart({
                           </div>
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-0.5">
-                              <button onClick={() => onUpdateQty(vendorId, originalIdx, item.qty - 1)} className="w-5 h-5 rounded border border-input flex items-center justify-center hover:bg-muted transition-colors text-xs">−</button>
-                              <span className="w-8 text-center text-xs">{item.qty}</span>
-                              <button onClick={() => onUpdateQty(vendorId, originalIdx, item.qty + 1)} className="w-5 h-5 rounded border border-input flex items-center justify-center hover:bg-muted transition-colors text-xs">+</button>
-                              <span className="text-xs text-muted-foreground ml-1">{pluralizeUnit(unitLabel, item.qty)}</span>
+                              <button onClick={() => onUpdateQty(vendorId, originalIdx, asNumber(item.qty) - 1)} className="w-5 h-5 rounded border border-input flex items-center justify-center hover:bg-muted transition-colors text-xs">−</button>
+                              <span className="w-8 text-center text-xs">{asNumber(item.qty)}</span>
+                              <button onClick={() => onUpdateQty(vendorId, originalIdx, asNumber(item.qty) + 1)} className="w-5 h-5 rounded border border-input flex items-center justify-center hover:bg-muted transition-colors text-xs">+</button>
+                              <span className="text-xs text-muted-foreground ml-1">{pluralizeUnit(unitLabel, asNumber(item.qty))}</span>
                             </div>
-                            <span className="text-xs font-semibold text-primary">${item.total_cost.toFixed(2)}</span>
+                            <span className="text-xs font-semibold text-primary">${money(lineTotal(item))}</span>
                           </div>
                           <VendorOptionSelector
                             item={items.find(i => i.id === item.item_id)}
                             currentVendorId={vendorId}
                             onSelectVendor={(newVendorId, newCost) => {
-                              const cartItem = vendorCart[originalIdx];
+                              const cartItem = cartRows[originalIdx];
                               const catalogItem = items.find(i => i.id === cartItem?.item_id);
                               if (cartItem) {
                                 onRemove(vendorId, originalIdx);
@@ -278,7 +303,7 @@ export default function MultiVendorCart({
                       const minType = locSettings?.min_order_type || vendor?.default_min_order_type || 'none';
                       const minValue = parseFloat(locSettings?.min_order_value || vendor?.default_min_order_value || 0);
                       if (minType === 'dollar' && minValue > 0 && total < minValue) {
-                        return <div className="text-xs bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 text-amber-800">⚠️ Add <strong>${(minValue - total).toFixed(2)}</strong> more to meet the ${minValue.toFixed(2)} minimum</div>;
+                        return <div className="text-xs bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 text-amber-800">Add <strong>${money(minValue - total)}</strong> more to meet the ${money(minValue)} minimum</div>;
                       }
                       if (minType === 'cases' && minValue > 0 && itemsInCart.length < minValue) {
                         return <div className="text-xs bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 text-amber-800">⚠️ Add <strong>{minValue - itemsInCart.length}</strong> more case(s) to meet minimum</div>;
@@ -287,7 +312,7 @@ export default function MultiVendorCart({
                     })()}
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-medium text-muted-foreground">Total</span>
-                      <span className="text-sm font-bold text-primary">${total.toFixed(2)}</span>
+                      <span className="text-sm font-bold text-primary">${money(total)}</span>
                     </div>
                     <Button className="w-full h-8 text-xs" disabled={!selectedLocation || itemsInCart.length === 0} onClick={() => onCreateOrder(vendorId)}>Place Order</Button>
                   </div>
@@ -298,7 +323,7 @@ export default function MultiVendorCart({
         })}
         {Object.keys(carts).length > 1 && (
           <Button className="w-full" disabled={!selectedLocation} onClick={onCreateAllOrders}>
-            Place All Orders (${Object.values(carts).reduce((s, cart) => s + cart.reduce((t, i) => t + i.total_cost, 0), 0).toFixed(2)})
+            Place All Orders (${money(Object.values(carts).reduce((s, cart) => s + cartTotal(cart), 0))})
           </Button>
         )}
       </div>
@@ -380,7 +405,7 @@ export default function MultiVendorCart({
                   const li = getLocInv(firstItem.id);
                   const onHand = li?.on_hand_quantity ?? null;
                   const par = li?.par_level ?? null;
-                  const cost = getUnitCostForDisplay(firstItem, vendorId);
+                  const cost = asNumber(getUnitCostForDisplay(firstItem, vendorId));
                   const unitLabel = getUnitLabelForDisplay(firstItem, vendorId);
                   const inCart = (carts[vendorId] || []).some(c => group.items.some(gi => gi.id === c.item_id));
                   return (
@@ -389,7 +414,7 @@ export default function MultiVendorCart({
                         <p className="text-xs font-medium leading-tight flex-1">{group.name}</p>
                         {inCart && <span className="text-[10px] bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 shrink-0">✓</span>}
                       </div>
-                      <p className="text-[10px] text-muted-foreground">{group.items.length} variants · ${cost.toFixed(2)} / {unitLabel}</p>
+                      <p className="text-[10px] text-muted-foreground">{group.items.length} variants · ${money(cost)} / {unitLabel}</p>
                       {selectedLocation && onHand !== null && (
                         <p className={`text-[10px] ${onHand < (par || 0) ? 'text-orange-500 font-medium' : 'text-muted-foreground'}`}>{onHand} on hand{par ? ` / ${par} par` : ''}</p>
                       )}
@@ -405,16 +430,16 @@ export default function MultiVendorCart({
                   const li = getLocInv(item.id);
                   const onHand = li?.on_hand_quantity ?? null;
                   const par = li?.par_level ?? null;
-                  const cost = getUnitCostForDisplay(item, vendorId);
+                  const cost = asNumber(getUnitCostForDisplay(item, vendorId));
                   const unitLabel = getUnitLabelForDisplay(item, vendorId);
                   const inCart = (carts[vendorId] || []).some(c => c.item_id === item.id);
                   return (
                     <div key={item.id} className={`rounded-lg border p-2.5 flex flex-col gap-1.5 ${inCart ? 'border-primary/50 bg-primary/5' : 'border-border bg-background'}`}>
                       <div className="flex items-start justify-between gap-1">
-                        <p className="text-xs font-medium leading-tight flex-1">{item.name}</p>
+                        <p className="text-xs font-medium leading-tight flex-1">{item.name || item.item_name || 'Unnamed item'}</p>
                         {inCart && <span className="text-[10px] bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 shrink-0">✓</span>}
                       </div>
-                      <p className="text-[10px] text-muted-foreground">${cost.toFixed(2)} / {unitLabel}</p>
+                      <p className="text-[10px] text-muted-foreground">${money(cost)} / {unitLabel}</p>
                       {selectedLocation && onHand !== null && (
                         <p className={`text-[10px] ${onHand < (par || 0) ? 'text-orange-500 font-medium' : 'text-muted-foreground'}`}>{onHand} on hand{par ? ` / ${par} par` : ''}</p>
                       )}
@@ -558,7 +583,7 @@ export default function MultiVendorCart({
                 const li = getLocInv(firstItem.id);
                 const onHand = li?.on_hand_quantity ?? null;
                 const par = li?.par_level ?? null;
-                const cost = getUnitCostForDisplay(firstItem, vendorId);
+                const cost = asNumber(getUnitCostForDisplay(firstItem, vendorId));
                 const unitLabel = getUnitLabelForDisplay(firstItem, vendorId);
                 
                 // Check if any variant is in cart
@@ -574,7 +599,7 @@ export default function MultiVendorCart({
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium leading-tight truncate">{group.name}</p>
+                        <p className="text-sm font-medium leading-tight truncate">{group.name || 'Unnamed item'}</p>
                         <p className="text-xs text-muted-foreground mt-0.5">{group.items.length} variants</p>
                         {firstItem.category && <p className="text-xs text-muted-foreground mt-0.5">{firstItem.category}</p>}
                         <p className="text-xs text-muted-foreground mt-0.5">{getVendorName(vendorId)}</p>
@@ -585,7 +610,7 @@ export default function MultiVendorCart({
                     </div>
 
                     <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      <span>${cost.toFixed(2)} / {unitLabel}</span>
+                      <span>${money(cost)} / {unitLabel}</span>
                       {selectedLocation && onHand !== null && (
                         <span className={onHand < (par || 0) ? 'text-orange-500 font-medium' : ''}>
                           {onHand} on hand {par ? `/ ${par} par` : ''}
@@ -598,7 +623,7 @@ export default function MultiVendorCart({
                             const vOnHand = vli?.on_hand_quantity ?? 0;
                             return (
                               <span key={v.id} className="text-[10px] bg-muted px-1.5 py-0.5 rounded">
-                                {v.variant_name || v.name}: {vOnHand}
+                                {v.variant_name || v.name || 'Unnamed item'}: {vOnHand}
                               </span>
                             );
                           })}
@@ -627,7 +652,7 @@ export default function MultiVendorCart({
                 const li = getLocInv(item.id);
                 const onHand = li?.on_hand_quantity ?? null;
                 const par = li?.par_level ?? null;
-                const cost = getUnitCostForDisplay(item, vendorId);
+                  const cost = asNumber(getUnitCostForDisplay(item, vendorId));
                 const unitLabel = getUnitLabelForDisplay(item, vendorId);
                 const vendorCart = vendorId ? (carts[vendorId] || []) : [];
                 const inCart = vendorCart?.some(c => c.item_id === item.id);
@@ -641,7 +666,7 @@ export default function MultiVendorCart({
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium leading-tight truncate">{item.name}</p>
+                        <p className="text-sm font-medium leading-tight truncate">{item.name || item.item_name || 'Unnamed item'}</p>
                         {item.category && <p className="text-xs text-muted-foreground mt-0.5">{item.category}</p>}
                         <p className="text-xs text-muted-foreground mt-0.5">{getVendorName(vendorId)}</p>
                       </div>
@@ -651,7 +676,7 @@ export default function MultiVendorCart({
                     </div>
 
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>${cost.toFixed(2)} / {unitLabel}</span>
+                      <span>${money(cost)} / {unitLabel}</span>
                       {selectedLocation && onHand !== null && (
                         <span className={onHand < (par || 0) ? 'text-orange-500 font-medium' : ''}>
                           {onHand} on hand {par ? `/ ${par} par` : ''}

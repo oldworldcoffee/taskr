@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -28,8 +27,13 @@ export default function TaskItem({ task, completion, subtasks, subtaskCompletion
   const [detailOpen, setDetailOpen] = useState(false);
   const [yesNoValue, setYesNoValue] = useState(null);
   const [openKbArticleId, setOpenKbArticleId] = useState(null);
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState(null);
   const isCompleted = !!completion;
   const hasSubtasks = subtasks && subtasks.length > 0;
+
+  const showCompletionError = (error) => {
+    toast.error(error?.message || "Could not update task. Please try again.");
+  };
 
   // Special handling for cash deposit task
   if (task.task_type === "cash_deposit") {
@@ -37,26 +41,41 @@ export default function TaskItem({ task, completion, subtasks, subtaskCompletion
   }
 
   const handleCheckbox = async () => {
-    if (isCompleted) return;
+    if (isCompleted || submitting) return;
     setSubmitting(true);
-    await onComplete(task.id, "true");
-    setSubmitting(false);
+    try {
+      await onComplete(task.id, "true");
+    } catch (error) {
+      showCompletionError(error);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleYesNo = async (value) => {
     if (isCompleted || submitting) return;
     setSubmitting(true);
-    await onComplete(task.id, value);
-    setYesNoValue(value);
-    setSubmitting(false);
+    try {
+      await onComplete(task.id, value);
+      setYesNoValue(value);
+    } catch (error) {
+      showCompletionError(error);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleTextSubmit = async () => {
-    if (!textValue.trim()) return;
+    if (!textValue.trim() || submitting) return;
     setSubmitting(true);
-    await onComplete(task.id, textValue.trim());
-    setTextValue("");
-    setSubmitting(false);
+    try {
+      await onComplete(task.id, textValue.trim());
+      setTextValue("");
+    } catch (error) {
+      showCompletionError(error);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handlePhoto = async (e) => {
@@ -204,7 +223,14 @@ export default function TaskItem({ task, completion, subtasks, subtaskCompletion
 
             {/* Photo thumbnail */}
             {isCompleted && task.task_type === "photo_upload" && completion.value && (
-              <img src={completion.value} alt="Uploaded" className="mt-2 rounded-lg h-24 object-cover" />
+              <button
+                type="button"
+                onClick={() => setPhotoPreviewUrl(completion.value)}
+                className="mt-2 block rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
+                aria-label="View uploaded photo"
+              >
+                <img src={completion.value} alt="Uploaded" className="h-24 rounded-lg object-cover" />
+              </button>
             )}
 
             {/* Text response */}
@@ -352,7 +378,14 @@ export default function TaskItem({ task, completion, subtasks, subtaskCompletion
                 {completion.value && task.task_type === "photo_upload" && (
                   <div className="mt-2">
                     <p className="text-sm font-medium text-muted-foreground mb-1">Photo</p>
-                    <img src={completion.value} alt="Uploaded" className="rounded-lg h-32 object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => setPhotoPreviewUrl(completion.value)}
+                      className="block rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
+                      aria-label="View uploaded photo"
+                    >
+                      <img src={completion.value} alt="Uploaded" className="h-32 rounded-lg object-cover" />
+                    </button>
                   </div>
                 )}
                 {completion.notes && (
@@ -372,6 +405,21 @@ export default function TaskItem({ task, completion, subtasks, subtaskCompletion
             )}
             <Button variant="secondary" onClick={() => setDetailOpen(false)}>Close</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!photoPreviewUrl} onOpenChange={(open) => !open && setPhotoPreviewUrl(null)}>
+        <DialogContent className="max-h-[92vh] max-w-4xl overflow-hidden p-3 sm:p-4">
+          <DialogHeader>
+            <DialogTitle>Uploaded Photo</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[78vh] overflow-auto rounded-lg bg-muted/40">
+            <img
+              src={photoPreviewUrl || ""}
+              alt="Uploaded full size"
+              className="mx-auto max-h-[76vh] w-full object-contain"
+            />
+          </div>
         </DialogContent>
       </Dialog>
     </div>

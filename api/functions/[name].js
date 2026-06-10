@@ -36,6 +36,8 @@ const LOCATION_LIMITS = {
   unlimited: Infinity,
 };
 
+const COMPANY_INVITE_ROLES = new Set(['employee', 'supervisor', 'manager', 'admin']);
+
 async function selectAll(client, table) {
   const { data, error } = await client.from(table).select('*');
   if (error) throw error;
@@ -62,6 +64,89 @@ async function maybeInviteUser(client, req, email, metadata = {}) {
   }
 
   return data;
+}
+
+function cleanEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function cleanAssignedLocations(locations) {
+  if (!Array.isArray(locations)) return [];
+  return [...new Set(locations.map((id) => String(id || '').trim()).filter(Boolean))];
+}
+
+function cleanOptionalMoney(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw httpError(400, 'Cash drawer amount must be zero or greater');
+  }
+  return amount;
+}
+
+function companyInvitePayload(user, body) {
+  if (!user.company_id) throw httpError(400, 'No company associated with your account');
+
+  const email = cleanEmail(body.email);
+  if (!email) throw httpError(400, 'Email is required');
+
+  const role = body.role || 'employee';
+  if (!COMPANY_INVITE_ROLES.has(role)) throw httpError(400, 'Invalid invite role');
+  if (user.role === 'manager' && role === 'admin') {
+    throw httpError(403, 'Managers cannot invite company admins');
+  }
+
+  return {
+    email,
+    name: String(body.name || '').trim(),
+    role,
+    company_id: user.company_id,
+    assigned_locations: cleanAssignedLocations(body.assigned_locations),
+    invited_by: user.email,
+  };
+}
+
+async function upsertPendingCompanyInvite(client, invite) {
+  const { data: existing, error: readError } = await client
+    .from('pending_invites')
+    .select('id')
+    .eq('company_id', invite.company_id)
+    .ilike('email', invite.email)
+    .order('created_date', { ascending: true });
+  if (readError) throw readError;
+
+  if (existing?.length) {
+    const { data, error } = await client
+      .from('pending_invites')
+      .update(invite)
+      .in('id', existing.map((row) => row.id))
+      .select('*');
+    if (error) throw error;
+    return data?.[0] || null;
+  }
+
+  const { data, error } = await client
+    .from('pending_invites')
+    .insert(invite)
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function validateInviteLocations(client, invite) {
+  if (!invite.assigned_locations.length) return;
+
+  const { data, error } = await client
+    .from('locations')
+    .select('id')
+    .eq('company_id', invite.company_id)
+    .in('id', invite.assigned_locations);
+  if (error) throw error;
+
+  const validIds = new Set((data || []).map((location) => location.id));
+  const hasInvalidLocation = invite.assigned_locations.some((id) => !validIds.has(id));
+  if (hasInvalidLocation) throw httpError(400, 'One or more locations are not available for this company');
 }
 
 async function getPlatformSettings(client) {
@@ -196,10 +281,16 @@ async function handleFunction(name, req, client, user, body) {
 
     case 'inviteUser': {
       requireManagerOrAdmin(user);
-      const email = body.email?.trim();
-      if (!email) throw httpError(400, 'Email is required');
-      await maybeInviteUser(client, req, email, { role: body.role || 'employee' });
-      return { success: true };
+      const invite = companyInvitePayload(user, body);
+      await validateInviteLocations(client, invite);
+      const pendingInvite = await upsertPendingCompanyInvite(client, invite);
+      await maybeInviteUser(client, req, invite.email, {
+        full_name: invite.name,
+        role: invite.role,
+        company_id: invite.company_id,
+        assigned_locations: invite.assigned_locations,
+      });
+      return { success: true, invite: pendingInvite };
     }
 
     case 'updateMe': {
@@ -254,6 +345,7 @@ async function handleFunction(name, req, client, user, body) {
           company_id: user.company_id,
           name: body.name,
           address: body.address || null,
+          cash_drawer_amount: cleanOptionalMoney(body.cash_drawer_amount),
           is_active: true,
         })
         .select('*')

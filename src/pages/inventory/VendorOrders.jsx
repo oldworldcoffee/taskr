@@ -20,6 +20,20 @@ import SmartFillDialog from '@/components/orders/SmartFillDialog';
 import AIReviewDialog from '@/components/orders/AIReviewDialog';
 import { getOrderUnit, toStockQuantity } from '@/lib/inventoryOrderUnits';
 
+const asArray = (value) => Array.isArray(value) ? value : [];
+const asNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+};
+const money = (value) => asNumber(value).toFixed(2);
+const lineTotal = (item) => {
+  if (item?.total_cost !== undefined && item?.total_cost !== null && item.total_cost !== '') {
+    return asNumber(item.total_cost);
+  }
+  return asNumber(item?.qty ?? item?.quantity_ordered) * asNumber(item?.unit_cost);
+};
+const cartTotal = (cart) => asArray(cart).reduce((sum, item) => sum + lineTotal(item), 0);
+
 
 export default function VendorOrders() {
   const { canAccessLocation, user, companyId } = useAuth();
@@ -49,26 +63,44 @@ export default function VendorOrders() {
   const [deleting, setDeleting] = useState(false);
   const [sendCancellationEmail, setSendCancellationEmail] = useState(false);
 
-  const load = () => Promise.all([
-    base44.entities.Location.filter({ is_active: true, company_id: companyId }),
-    base44.entities.InventoryLocationSetting.filter({ company_id: companyId }),
-    base44.entities.Vendor.filter({ is_active: true, company_id: companyId }),
-    base44.entities.InventoryItem.filter({ is_active: true, company_id: companyId }),
-    base44.entities.LocationInventory.filter({ company_id: companyId }),
-    base44.entities.Order.filter({ company_id: companyId }, '-created_date', 50),
-  ]).then(([locs, settings, vends, itms, linv, ords]) => {
-    const enrichedLocations = enrichLocationsWithInventorySettings(locs, settings);
-    const accessibleLocs = enrichedLocations.filter(l => canAccessLocation(l.id));
-    const accessibleLocIds = new Set(accessibleLocs.map(l => l.id));
-    setLocations(accessibleLocs);
-    setVendors(vends);
-    setItems(itms);
-    setLocInv(linv);
-    setOrders(ords.filter(o => accessibleLocIds.has(o.location_id)));
-    setLoading(false);
-  });
+  const load = async () => {
+    if (!companyId) {
+      setLocations([]);
+      setVendors([]);
+      setItems([]);
+      setLocInv([]);
+      setOrders([]);
+      setLoading(false);
+      return;
+    }
 
-  useEffect(() => { load(); }, []);
+    setLoading(true);
+    try {
+      const [locs, settings, vends, itms, linv, ords] = await Promise.all([
+        base44.entities.Location.filter({ is_active: true, company_id: companyId }),
+        base44.entities.InventoryLocationSetting.filter({ company_id: companyId }),
+        base44.entities.Vendor.filter({ is_active: true, company_id: companyId }),
+        base44.entities.InventoryItem.filter({ is_active: true, company_id: companyId }),
+        base44.entities.LocationInventory.filter({ company_id: companyId }),
+        base44.entities.Order.filter({ company_id: companyId }, '-created_date', 50),
+      ]);
+      const enrichedLocations = enrichLocationsWithInventorySettings(asArray(locs), asArray(settings));
+      const accessibleLocs = enrichedLocations.filter(l => canAccessLocation(l.id));
+      const accessibleLocIds = new Set(accessibleLocs.map(l => l.id));
+      setLocations(accessibleLocs);
+      setVendors(asArray(vends));
+      setItems(asArray(itms));
+      setLocInv(asArray(linv));
+      setOrders(asArray(ords).filter(o => accessibleLocIds.has(o.location_id)));
+    } catch (error) {
+      console.error('Failed to load orders page:', error);
+      toast.error('Orders could not load. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [companyId]);
 
   const getLocInv = (itemId) => locInv.find(l => l.location_id === selectedLocation && l.item_id === itemId);
   const selectedInventoryLocation = locations.find(l => l.id === selectedLocation);
@@ -119,12 +151,12 @@ export default function VendorOrders() {
     // see their supplier's vendor pricing.
     const vendor = vendors.find(v => v.id === vendorId);
     if (!selectedIsCommissary && vendor?.is_commissary && item.is_commissary_item) {
-      return item.commissary_price || 0;
+      return asNumber(item.commissary_price);
     }
     // Otherwise use regular vendor pricing
     const preferred = (item.purchase_options || []).find(p => p.vendor_id === vendorId && p.is_preferred) || 
                      (item.purchase_options || []).find(p => p.vendor_id === vendorId);
-    return preferred?.unit_cost || item.unit_cost || 0;
+    return asNumber(preferred?.unit_cost ?? item.unit_cost);
   };
 
   const getCatalogItem = (itemId) => items.find(i => i.id === itemId) || null;
@@ -148,20 +180,22 @@ export default function VendorOrders() {
 
   const buildCartItem = ({ item, vendorId, qty, unitCost, onHand = 0, parLevel = 0 }) => {
     const orderUnit = getOrderUnit(item, vendorId);
+    const orderQty = asNumber(qty);
+    const cost = asNumber(unitCost);
     return {
       item_id: item.id,
-      item_name: item.name,
+      item_name: item.name || item.item_name || 'Unnamed item',
       category: item.category,
       unit_of_measure: orderUnit.label,
       base_unit_of_measure: orderUnit.baseUnit,
       order_unit_label: orderUnit.label,
       order_unit_multiplier: orderUnit.multiplier,
-      stock_quantity_ordered: toStockQuantity(qty, orderUnit),
-      unit_cost: unitCost,
-      qty,
-      total_cost: qty * unitCost,
-      on_hand: onHand,
-      par_level: parLevel,
+      stock_quantity_ordered: toStockQuantity(orderQty, orderUnit),
+      unit_cost: cost,
+      qty: orderQty,
+      total_cost: orderQty * cost,
+      on_hand: asNumber(onHand),
+      par_level: asNumber(parLevel),
       purchase_options: item.purchase_options || [],
       selected_purchase_option: orderUnit.option || null,
       variant_id: item.variant_id || null,
@@ -172,11 +206,12 @@ export default function VendorOrders() {
   const buildOrderItem = (cartItem, vendorId) => {
     const itemDetails = getCartItemDetails(cartItem);
     const orderUnit = getOrderUnit(itemDetails, vendorId);
-    const qty = Number(cartItem.qty || 0);
+    const qty = asNumber(cartItem.qty);
+    const unitCost = asNumber(cartItem.unit_cost);
 
     return {
       item_id: cartItem.item_id,
-      item_name: cartItem.item_name,
+      item_name: cartItem.item_name || itemDetails.name || 'Unnamed item',
       category: cartItem.category,
       unit_of_measure: cartItem.order_unit_label || orderUnit.label,
       base_unit_of_measure: cartItem.base_unit_of_measure || orderUnit.baseUnit,
@@ -184,8 +219,8 @@ export default function VendorOrders() {
       order_unit_multiplier: cartItem.order_unit_multiplier || orderUnit.multiplier,
       stock_quantity_ordered: cartItem.stock_quantity_ordered ?? toStockQuantity(qty, orderUnit),
       quantity_ordered: qty,
-      unit_cost: cartItem.unit_cost,
-      total_cost: cartItem.total_cost,
+      unit_cost: unitCost,
+      total_cost: lineTotal({ ...cartItem, qty, unit_cost: unitCost }),
       selected_purchase_option: cartItem.selected_purchase_option || orderUnit.option || null,
       variant_id: cartItem.variant_id || null,
       variant_quantities: cartItem.variant_quantities || null,
@@ -208,8 +243,8 @@ export default function VendorOrders() {
       if (!vendorId) return;
       
       const li = getLocInv(item.id);
-      const onHand = li?.on_hand_quantity || 0;
-      const par = li?.par_level || 0;
+      const onHand = asNumber(li?.on_hand_quantity);
+      const par = asNumber(li?.par_level);
       const needed = Math.max(0, par - onHand);
       
       if (needed > 0) {
@@ -249,8 +284,8 @@ export default function VendorOrders() {
       if (!vendorId) return;
       
       const li = getLocInv(item.id);
-      const onHand = li?.on_hand_quantity || 0;
-      const aiPar = item.ai_suggested_par || 0;
+      const onHand = asNumber(li?.on_hand_quantity);
+      const aiPar = asNumber(item.ai_suggested_par);
       const needed = Math.max(0, aiPar - onHand);
       
       if (needed > 0) {
@@ -300,7 +335,7 @@ export default function VendorOrders() {
       const unitCost = getUnitCostForItem(item, targetVendor);
       
       if (existing >= 0) {
-        const nextQty = (newCarts[targetVendor][existing].qty || 0) + qty;
+        const nextQty = asNumber(newCarts[targetVendor][existing].qty) + asNumber(qty);
         newCarts[targetVendor][existing] = {
           ...newCarts[targetVendor][existing],
           ...buildCartItem({
@@ -316,10 +351,10 @@ export default function VendorOrders() {
         newCarts[targetVendor].push(buildCartItem({
           item,
           vendorId: targetVendor,
-          qty,
+          qty: asNumber(qty),
           unitCost,
-          onHand: li?.on_hand_quantity || 0,
-          parLevel: li?.par_level || 0,
+          onHand: asNumber(li?.on_hand_quantity),
+          parLevel: asNumber(li?.par_level),
         }));
       }
       return newCarts;
@@ -340,7 +375,7 @@ export default function VendorOrders() {
     newCarts[vendorId][idx] = {
       ...current,
       qty,
-      total_cost: qty * current.unit_cost,
+      total_cost: qty * asNumber(current.unit_cost),
       stock_quantity_ordered: toStockQuantity(qty, orderUnit),
     };
     setCarts(newCarts);
@@ -370,7 +405,8 @@ export default function VendorOrders() {
       [vendorId]: (order.items || []).map(i => {
         const itemDetails = getCartItemDetails(i);
         const orderUnit = getOrderUnit(itemDetails, vendorId);
-        const qty = Number(i.quantity_ordered || 0);
+        const qty = asNumber(i.quantity_ordered);
+        const unitCost = asNumber(i.unit_cost);
         return {
           item_id: i.item_id,
           item_name: i.item_name,
@@ -380,9 +416,9 @@ export default function VendorOrders() {
           order_unit_label: i.order_unit_label || orderUnit.label,
           order_unit_multiplier: i.order_unit_multiplier || orderUnit.multiplier,
           stock_quantity_ordered: i.stock_quantity_ordered ?? toStockQuantity(qty, orderUnit),
-          unit_cost: i.unit_cost,
+          unit_cost: unitCost,
           qty,
-          total_cost: i.total_cost,
+          total_cost: lineTotal({ ...i, qty, unit_cost: unitCost }),
           on_hand: 0,
           par_level: 0,
           selected_purchase_option: i.selected_purchase_option || orderUnit.option || null,
@@ -401,7 +437,7 @@ export default function VendorOrders() {
     const vendorId = editDialog.vendor_id;
     const vendorCart = carts[vendorId] || [];
     const orderItems = vendorCart.filter(i => i.qty > 0).map(i => buildOrderItem(i, vendorId));
-    const totalAmount = vendorCart.reduce((s, i) => s + i.total_cost, 0);
+    const totalAmount = cartTotal(vendorCart);
     await base44.entities.Order.update(editDialog.id, {
       items: orderItems,
       total_amount: totalAmount,
@@ -416,11 +452,11 @@ export default function VendorOrders() {
 
   const getCartTotal = (vendorId) => {
     const vendorCart = carts[vendorId] || [];
-    return vendorCart.reduce((s, i) => s + i.total_cost, 0);
+    return cartTotal(vendorCart);
   };
 
   const getAllCartsTotal = () => {
-    return Object.values(carts).reduce((total, vendorCart) => total + vendorCart.reduce((s, i) => s + i.total_cost, 0), 0);
+    return Object.values(carts).reduce((total, vendorCart) => total + cartTotal(vendorCart), 0);
   };
 
   const createOrder = async (vendorId) => {
@@ -513,7 +549,7 @@ export default function VendorOrders() {
     if (!pendingOrderItems || !pendingVendorId) return;
     
     const vendorCart = carts[pendingVendorId] || [];
-    const totalAmount = vendorCart.reduce((s, i) => s + i.total_cost, 0);
+    const totalAmount = cartTotal(vendorCart);
     const vendor = vendors.find(v => v.id === pendingVendorId);
     const isNonEmailVendor = pendingOrderType === 'commissary' || vendor?.order_type === 'online' || vendor?.order_type === 'instore';
     const order = await base44.entities.Order.create({
@@ -687,29 +723,29 @@ Address: ${loc?.address || '—'}</p>
   const deleteOrder = async (sendCancellation = false) => {
     if (!deleteDialog) return;
     setDeleting(true);
-    
-    if (sendCancellation) {
-      // Send cancellation email first
-      const vendor = vendors.find(v => v.id === deleteDialog.vendor_id);
-      const loc = locations.find(l => l.id === deleteDialog.location_id);
-      const locSettings = (vendor?.location_settings || []).find(s => s.location_id === deleteDialog.location_id);
-      const toEmail = locSettings?.order_email || vendor?.default_order_email || vendor?.email;
-      const ccEmail = locSettings?.cc_email || vendor?.default_cc_email || '';
-      
-      // Build cancellation email HTML
-      const items = deleteDialog.items || [];
-      const totalAmount = deleteDialog.total_amount || 0;
-      const cancelledAt = format(new Date(), 'MM/dd/yyyy, hh:mm aa');
-      const rows = items.map(i => `
+    try {
+      if (sendCancellation) {
+        // Send cancellation email first
+        const vendor = vendors.find(v => v.id === deleteDialog.vendor_id);
+        const loc = locations.find(l => l.id === deleteDialog.location_id);
+        const locSettings = (vendor?.location_settings || []).find(s => s.location_id === deleteDialog.location_id);
+        const toEmail = locSettings?.order_email || vendor?.default_order_email || vendor?.email;
+        const ccEmail = locSettings?.cc_email || vendor?.default_cc_email || '';
+        
+        // Build cancellation email HTML
+        const items = asArray(deleteDialog.items);
+        const totalAmount = asNumber(deleteDialog.total_amount);
+        const cancelledAt = format(new Date(), 'MM/dd/yyyy, hh:mm aa');
+        const rows = items.map(i => `
         <tr>
           <td style="border:1px solid #ccc;padding:6px 10px;">${i.item_name}</td>
           <td style="border:1px solid #ccc;padding:6px 10px;text-align:center;">${i.quantity_ordered}</td>
           <td style="border:1px solid #ccc;padding:6px 10px;">${i.quantity_ordered} Total (${i.unit_of_measure})</td>
-          <td style="border:1px solid #ccc;padding:6px 10px;">$${(i.unit_cost || 0).toFixed(2)}</td>
-          <td style="border:1px solid #ccc;padding:6px 10px;">$${(i.total_cost || 0).toFixed(2)}</td>
+          <td style="border:1px solid #ccc;padding:6px 10px;">$${money(i.unit_cost)}</td>
+          <td style="border:1px solid #ccc;padding:6px 10px;">$${money(lineTotal(i))}</td>
         </tr>`).join('');
-      
-      const htmlBody = `
+        
+        const htmlBody = `
 <p><strong>CANCELLATION NOTICE</strong></p>
 <p>The following order from <strong>${loc?.business_name ? loc.business_name + ' - ' : ''}${loc?.name}</strong> to <strong>${vendor?.name}</strong> has been CANCELLED.</p>
 <p><strong>Order number:</strong> ${deleteDialog.order_number}</p>
@@ -730,7 +766,7 @@ Address: ${loc?.address || '—'}</p>
   <tfoot>
     <tr style="background:#f5f5f5;">
       <td colspan="4" style="border:1px solid #ccc;padding:6px 10px;text-align:right;font-weight:bold;">Sub Total:</td>
-      <td style="border:1px solid #ccc;padding:6px 10px;font-weight:bold;">$${(totalAmount || 0).toFixed(2)}</td>
+      <td style="border:1px solid #ccc;padding:6px 10px;font-weight:bold;">$${money(totalAmount)}</td>
     </tr>
   </tfoot>
 </table>
@@ -739,36 +775,47 @@ Address: ${loc?.address || '—'}</p>
 Phone: ${loc?.phone || '—'}<br/>
 Address: ${loc?.address || '—'}</p>
       `.trim();
+        
+        // Fetch company logo
+        const settings = await base44.entities.BrandSettings.filter({ company_id: companyId });
+        const logoUrl = settings.length > 0 ? settings[0].logo_url : null;
+        
+        await base44.functions.invoke('cancelVendorOrderEmail', {
+          orderId: deleteDialog.id,
+          toEmail,
+          ccEmail: ccEmail || undefined,
+          subject: `CANCELLED: Order ${deleteDialog.order_number}`,
+          htmlBody,
+          logoUrl,
+          appUrl: window.location.origin,
+        });
+      }
       
-      // Fetch company logo
-      const settings = await base44.entities.BrandSettings.filter({ company_id: companyId });
-      const logoUrl = settings.length > 0 ? settings[0].logo_url : null;
-      
-      await base44.functions.invoke('cancelVendorOrderEmail', {
-        orderId: deleteDialog.id,
-        toEmail,
-        ccEmail: ccEmail || undefined,
-        subject: `CANCELLED: Order ${deleteDialog.order_number}`,
-        htmlBody,
-        logoUrl,
-        appUrl: window.location.origin,
-      });
+      await base44.entities.Order.delete(deleteDialog.id);
+      await load();
+      setDeleteDialog(null);
+      setSendCancellationEmail(false);
+      toast.success(sendCancellation ? 'Cancellation email sent and order deleted' : 'Order deleted');
+    } catch (error) {
+      console.error('Failed to delete order:', error);
+      toast.error('Order could not be deleted. Please try again.');
+    } finally {
+      setDeleting(false);
     }
-    
-    await base44.entities.Order.delete(deleteDialog.id);
-    await load();
-    setDeleteDialog(null);
-    setDeleting(false);
-    toast.success(sendCancellation ? 'Cancellation email sent and order deleted' : 'Order deleted');
   };
 
   const locName = (id) => locations.find(l => l.id === id)?.name || '—';
   const vendorName = (id) => vendors.find(v => v.id === id)?.name || '—';
 
   const refreshOrders = async () => {
-    const ords = await base44.entities.Order.list('-created_date', 50);
-    const accessibleLocIds = new Set(locations.map(l => l.id));
-    setOrders(ords.filter(o => accessibleLocIds.has(o.location_id)));
+    try {
+      const ords = await base44.entities.Order.filter({ company_id: companyId }, '-created_date', 50);
+      const accessibleLocIds = new Set(locations.map(l => l.id));
+      setOrders(asArray(ords).filter(o => accessibleLocIds.has(o.location_id)));
+    } catch (error) {
+      console.error('Failed to refresh orders:', error);
+      toast.error('Orders could not refresh. Please try again.');
+    }
   };
 
   if (loading) return (
@@ -790,7 +837,7 @@ Address: ${loc?.address || '—'}</p>
             <Button variant={view === 'cart' ? 'default' : 'outline'} onClick={() => setView('cart')}>
               <ShoppingCart className="w-4 h-4 mr-1" />
               New Order
-              {(() => { const count = Object.values(carts).reduce((sum, cart) => sum + cart.length, 0); return count > 0 ? <span className="ml-1 bg-white text-primary rounded-full text-xs w-5 h-5 flex items-center justify-center font-bold">{count}</span> : null; })()}
+              {(() => { const count = Object.values(carts).reduce((sum, cart) => sum + asArray(cart).length, 0); return count > 0 ? <span className="ml-1 bg-white text-primary rounded-full text-xs w-5 h-5 flex items-center justify-center font-bold">{count}</span> : null; })()}
             </Button>
           </div>
         }
@@ -846,7 +893,7 @@ Address: ${loc?.address || '—'}</p>
                 const locSettings = (vendor?.location_settings || []).find(s => s.location_id === emailDialog.loc?.id);
                 const minType = locSettings?.min_order_type || vendor?.default_min_order_type || 'none';
                 const minValue = parseFloat(locSettings?.min_order_value || vendor?.default_min_order_value || 0);
-                const total = emailDialog.totalAmount || 0;
+                const total = asNumber(emailDialog.totalAmount);
                 const cartItems = emailDialog.items || [];
 
                 if (minType === 'dollar' && minValue > 0 && total < minValue) {
@@ -856,7 +903,7 @@ Address: ${loc?.address || '—'}</p>
                       <div>
                         <p className="font-medium text-amber-800">Below minimum order</p>
                         <p className="text-amber-700 text-xs mt-0.5">
-                          This order is <strong>${total.toFixed(2)}</strong>, but {vendor?.name} requires a minimum of <strong>${minValue.toFixed(2)}</strong>. You can still send it, but the vendor may reject it.
+                          This order is <strong>${money(total)}</strong>, but {vendor?.name} requires a minimum of <strong>${money(minValue)}</strong>. You can still send it, but the vendor may reject it.
                         </p>
                       </div>
                     </div>
@@ -894,15 +941,15 @@ Address: ${loc?.address || '—'}</p>
                       <tr key={i}>
                         <td className="px-3 py-2">{item.item_name}</td>
                         <td className="px-3 py-2">{item.quantity_ordered} {item.unit_of_measure}</td>
-                        <td className="px-3 py-2">${(item.unit_cost || 0).toFixed(2)}</td>
-                        <td className="px-3 py-2 font-medium">${(item.total_cost || 0).toFixed(2)}</td>
+                        <td className="px-3 py-2">${money(item.unit_cost)}</td>
+                        <td className="px-3 py-2 font-medium">${money(lineTotal(item))}</td>
                       </tr>
                     ))}
                   </tbody>
                   <tfoot className="bg-muted/20 border-t border-border">
                     <tr>
                       <td colSpan={3} className="px-3 py-2 text-sm font-semibold text-right">Sub Total:</td>
-                      <td className="px-3 py-2 font-bold">${(emailDialog.totalAmount || 0).toFixed(2)}</td>
+                      <td className="px-3 py-2 font-bold">${money(emailDialog.totalAmount)}</td>
                     </tr>
                   </tfoot>
                 </table>
@@ -940,7 +987,7 @@ Address: ${loc?.address || '—'}</p>
                 <div><span className="text-muted-foreground">Location:</span> <span className="font-medium">{locName(viewDialog.location_id)}</span></div>
                 <div><span className="text-muted-foreground">Vendor:</span> <span className="font-medium">{vendorName(viewDialog.vendor_id)}</span></div>
                 <div><span className="text-muted-foreground">Status:</span> <StatusBadge status={viewDialog.status} /></div>
-                <div><span className="text-muted-foreground">Fulfilled:</span> <span className="font-bold text-green-600">${(viewDialog.items || []).reduce((sum, item) => sum + ((item.quantity_received || 0) * (item.unit_cost || 0)), 0).toFixed(2)}</span></div>
+                <div><span className="text-muted-foreground">Fulfilled:</span> <span className="font-bold text-green-600">${money(asArray(viewDialog.items).reduce((sum, item) => sum + (asNumber(item.quantity_received) * asNumber(item.unit_cost)), 0))}</span></div>
               </div>
               {viewDialog.notes && (
                 <div className="border border-border rounded-lg p-3 bg-muted/30">
@@ -962,14 +1009,14 @@ Address: ${loc?.address || '—'}</p>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {viewDialog.items?.map((item, i) => (
+                    {asArray(viewDialog.items).map((item, i) => (
                       <tr key={i}>
                         <td className="px-3 py-2">{item.item_name}</td>
                         <td className="px-3 py-2">{item.quantity_ordered}</td>
                         <td className="px-3 py-2 font-medium text-green-600">{item.quantity_received || 0}</td>
                         <td className="px-3 py-2 text-muted-foreground">{item.unit_of_measure}</td>
-                        <td className="px-3 py-2">${(item.unit_cost || 0).toFixed(2)}</td>
-                        <td className="px-3 py-2 font-medium">${(item.total_cost || 0).toFixed(2)}</td>
+                        <td className="px-3 py-2">${money(item.unit_cost)}</td>
+                        <td className="px-3 py-2 font-medium">${money(lineTotal(item))}</td>
                       </tr>
                     ))}
                   </tbody>

@@ -1,10 +1,12 @@
+import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { base44 } from "@/api/base44Client";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { ArrowLeft, MapPin, Clock, Flag, AlertCircle, Camera, FileText, CheckSquare, Square, CheckCircle2, Circle } from "lucide-react";
+import { ArrowLeft, MapPin, Clock, Flag, AlertCircle, Camera, FileText, CheckSquare, Square } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import StatusBadge from "@/components/shared/StatusBadge";
 import UserAvatar from "@/components/shared/UserAvatar";
 
@@ -13,6 +15,7 @@ const typeIcons = { checkbox: CheckSquare, text_input: FileText, photo_upload: C
 export default function ChecklistReview() {
   const { instanceId } = useParams();
   const navigate = useNavigate();
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState(null);
 
   const { data: instance } = useQuery({
     queryKey: ["review-instance", instanceId],
@@ -171,7 +174,14 @@ export default function ChecklistReview() {
                       <p className="mt-1 text-sm bg-muted/50 rounded-lg px-3 py-2 inline-block">{comp.value}</p>
                     )}
                     {comp && task.task_type === "photo_upload" && comp.value && (
-                      <img src={comp.value} alt="Upload" className="mt-2 rounded-lg h-32 object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setPhotoPreviewUrl(comp.value)}
+                        className="mt-2 block rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
+                        aria-label="View uploaded photo"
+                      >
+                        <img src={comp.value} alt="Upload" className="h-32 rounded-lg object-cover" />
+                      </button>
                     )}
 
                     {/* Subtasks */}
@@ -190,6 +200,16 @@ export default function ChecklistReview() {
                                   — {stComp.completed_by_name} · {format(new Date(stComp.completed_at), "h:mm a")}
                                 </span>
                               )}
+                              {stComp && st.task_type === "photo_upload" && stComp.value && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPhotoPreviewUrl(stComp.value)}
+                                  className="mt-2 block rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
+                                  aria-label="View uploaded photo"
+                                >
+                                  <img src={stComp.value} alt="Upload" className="h-24 rounded-lg object-cover" />
+                                </button>
+                              )}
                             </div>
                           );
                         })}
@@ -202,6 +222,21 @@ export default function ChecklistReview() {
           })}
         </CardContent>
       </Card>
+
+      <Dialog open={!!photoPreviewUrl} onOpenChange={(open) => !open && setPhotoPreviewUrl(null)}>
+        <DialogContent className="max-h-[92vh] max-w-4xl overflow-hidden p-3 sm:p-4">
+          <DialogHeader>
+            <DialogTitle>Uploaded Photo</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[78vh] overflow-auto rounded-lg bg-muted/40">
+            <img
+              src={photoPreviewUrl || ""}
+              alt="Uploaded full size"
+              className="mx-auto max-h-[76vh] w-full object-contain"
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
