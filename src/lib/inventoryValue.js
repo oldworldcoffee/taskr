@@ -1,7 +1,7 @@
 import { isCommissaryLocation } from '@/lib/inventoryLocations';
 
 export function getPreferredPurchaseOption(item) {
-  const options = item?.purchase_options || [];
+  const options = Array.isArray(item?.purchase_options) ? item.purchase_options : [];
   return options.find((option) => option.is_preferred) || options[0] || null;
 }
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { base44 } from "@/api/base44Client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/AuthContext";
@@ -16,8 +16,7 @@ import { formatDistanceToNow } from "date-fns";
 import ReactQuill from "react-quill";
 import "react-quill/dist/quill.snow.css";
 import UserAvatar from "@/components/shared/UserAvatar";
-
-const LS_KEY_FORUM = "last_seen_forum";
+import { getForumLastSeen, markForumSeenAt } from "@/hooks/useUnreadCounts";
 
 
 function renderWithMentions(text) {
@@ -239,10 +238,7 @@ export default function Forum() {
   const queryClient = useQueryClient();
   const [scopeFilter, setScopeFilter] = useState("all");
   const [newPostDialog, setNewPostDialog] = useState(false);
-  const [lastSeenForum] = useState(() => {
-    const v = localStorage.getItem(LS_KEY_FORUM);
-    return v ? new Date(v) : new Date(0);
-  });
+  const [lastSeenForum] = useState(() => getForumLastSeen());
   const [newPostsDismissed, setNewPostsDismissed] = useState(false);
 
   const { data: allLocations = [] } = useQuery({ queryKey: ["locations"], queryFn: () => base44.entities.Location.filter({ company_id: user.company_id }) });
@@ -284,6 +280,13 @@ export default function Forum() {
     if (p.board_id) return false;
     return new Date(p.created_date) > lastSeenForum;
   }).sort((a, b) => new Date(b.created_date) - new Date(a.created_date));
+  const latestUnreadPostAt = unreadPosts[0]?.created_date;
+
+  useEffect(() => {
+    if (latestUnreadPostAt) {
+      markForumSeenAt(latestUnreadPostAt);
+    }
+  }, [latestUnreadPostAt]);
 
   // Pinned first, then announcements, then normal
   const sorted = [...filteredPosts].sort((a, b) => {

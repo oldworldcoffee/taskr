@@ -10,6 +10,13 @@ import { Link } from "react-router-dom";
 import { format } from "date-fns";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
+const DEFAULT_DRAWER_AMOUNT = 200;
+
+function receiptDrawerAmount(receipt) {
+  const amount = Number(receipt?.drawer_amount);
+  return Number.isFinite(amount) && amount >= 0 ? amount : DEFAULT_DRAWER_AMOUNT;
+}
+
 export default function DepositReports() {
   const { user } = useAuth();
   const [locationId, setLocationId] = useState("");
@@ -49,6 +56,7 @@ export default function DepositReports() {
     }, 0);
 
     const totalCash = billsTotal + coinsTotal + rolledTotal;
+    const drawerAmount = receiptDrawerAmount(receipt);
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -99,6 +107,10 @@ export default function DepositReports() {
               <div class="row">
                 <span class="label">Actual Amount:</span>
                 <span class="amount">$${(receipt.actual_amount || 0).toFixed(2)}</span>
+              </div>
+              <div class="row">
+                <span class="label">Drawer Amount:</span>
+                <span class="amount">$${drawerAmount.toFixed(2)}</span>
               </div>
               <div class="row">
                 <span class="label">Deposit Amount:</span>
@@ -222,6 +234,7 @@ export default function DepositReports() {
             }, 0);
 
             const totalCash = billsTotal + coinsTotal + rolledTotal;
+            const drawerAmount = receiptDrawerAmount(receipt);
 
             return (
               <Card key={receipt.id}>
@@ -250,7 +263,7 @@ export default function DepositReports() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                     <div>
                       <p className="text-xs text-muted-foreground">Expected</p>
                       <p className="font-semibold">${(receipt.expected_amount || 0).toFixed(2)}</p>
@@ -258,6 +271,10 @@ export default function DepositReports() {
                     <div>
                       <p className="text-xs text-muted-foreground">Actual</p>
                       <p className="font-semibold">${(receipt.actual_amount || 0).toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Drawer</p>
+                      <p className="font-semibold">${drawerAmount.toFixed(2)}</p>
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground">Deposit</p>
@@ -312,6 +329,13 @@ export default function DepositReports() {
                   <p className="text-muted-foreground">Deposit Amount</p>
                   <p className="font-medium">${(selectedReceipt.deposit_amount || 0).toFixed(2)}</p>
                 </div>
+                <div>
+                  <p className="text-muted-foreground">Drawer Amount</p>
+                  <p className="font-medium">${receiptDrawerAmount(selectedReceipt).toFixed(2)}</p>
+                </div>
+              </div>
+
+              <div className="pb-4 border-b">
                 <div>
                   <p className="text-muted-foreground">Over/Short</p>
                   <p className={`font-medium ${selectedReceipt.over_short >= 0 ? "text-success" : "text-destructive"}`}>

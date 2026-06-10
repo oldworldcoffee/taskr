@@ -77,6 +77,19 @@ function ChatRoom({ channelId, channelName, userId, userName, userEmail, company
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  useEffect(() => {
+    const newestVisibleMessageAt = messages.reduce((newest, message) => {
+      if (message.author_email === userEmail) return newest;
+      const createdAt = new Date(message.created_date);
+      if (Number.isNaN(createdAt.getTime())) return newest;
+      return !newest || createdAt > newest ? createdAt : newest;
+    }, null);
+
+    if (newestVisibleMessageAt && newestVisibleMessageAt > getChannelLastSeen(channelId)) {
+      markChannelSeen(channelId, newestVisibleMessageAt);
+    }
+  }, [channelId, messages, userEmail]);
+
   const sendMessage = async () => {
     if (!text.trim()) return;
     const msg = text.trim();
@@ -220,8 +233,6 @@ function NewDMDialog({ open, onOpenChange, onStart, users, currentUserEmail }) {
     </Dialog>
   );
 }
-
-const LS_KEY_CHAT = "last_seen_chat_v2";
 
 function UnreadFeed({ messages, channels, dmChannels, userEmail, onSelectChannel, allUsers = [] }) {
   const userAvatarMap = Object.fromEntries(allUsers.map(u => [u.email, u.avatar_url]));

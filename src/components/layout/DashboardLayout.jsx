@@ -3,10 +3,12 @@ import {
   AlertTriangle,
   ArrowLeftRight,
   BarChart3,
+  Calculator,
   BookOpen,
   ChevronRight,
   ClipboardList,
   Coffee,
+  DollarSign,
   FileText,
   Globe,
   LayoutDashboard,
@@ -43,6 +45,7 @@ const dashboardItem = { path: "/dashboard", label: "Dashboard", icon: LayoutDash
 const checklistItems = [
   { path: "/dashboard/checklists/overview", label: "Overview", icon: LayoutDashboard },
   { path: "/dashboard/issues", label: "Issues & Flags", icon: AlertTriangle },
+  { path: "/dashboard/deposits", label: "Deposit Reports", icon: DollarSign },
   { path: "/dashboard/checklists/setup", label: "Setup", icon: Wrench },
 ];
 
@@ -59,6 +62,7 @@ const inventoryItems = [
   { path: "/dashboard/inventory/invoices", label: "Invoices", icon: FileText },
   { path: "/dashboard/inventory/vendors", label: "Vendors", icon: Truck },
   { path: "/dashboard/inventory/reports", label: "Reports", icon: BarChart3 },
+  { path: "/dashboard/inventory/recipes-pricing", label: "Recipes & Pricing", icon: Calculator },
   { path: "/dashboard/inventory/settings", label: "Settings", icon: Settings },
 ];
 
@@ -183,7 +187,7 @@ function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, un
   const visibleTeamHubItems = teamHubItems.filter((item) => canSeeItem(item, role));
   const visiblePrimaryItems = primaryItems.filter((item) => canSeeItem(item, role));
   const isItemActive = (item) => item.exact ? isExact(item.path) : isActive(item.path);
-  const checklistsActive = isActive("/dashboard/checklists") || isActive("/dashboard/checklist") || isActive("/dashboard/issues") || isActive("/dashboard/review");
+  const checklistsActive = isActive("/dashboard/checklists") || isActive("/dashboard/checklist") || isActive("/dashboard/issues") || isActive("/dashboard/deposits") || isActive("/dashboard/review");
   const inventoryActive = isActive("/dashboard/inventory");
   const teamHubActive = visibleTeamHubItems.some(isItemActive);
   const teamHubBadge = (unreadChat || 0) + (unreadForum || 0);

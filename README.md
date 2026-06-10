@@ -9,13 +9,14 @@ Taskr is a Vite React app migrated from Base44 to Vercel and Supabase.
    npm install
    ```
 2. Copy `.env.example` to `.env.local` and fill in your Supabase values.
+   Add `OPENAI_API_KEY` to enable scanned invoice image parsing. Without it, invoice uploads still open manual review.
 3. Apply the SQL in `supabase/migrations/20260608130000_initial_taskr_schema.sql` to your Supabase project.
 4. Run the app:
    ```bash
    npm run dev
    ```
 
-For Vercel, add the same environment variables from `.env.example` in Project Settings. Keep `SUPABASE_SERVICE_ROLE_KEY` server-only.
+For Vercel, add the same environment variables from `.env.example` in Project Settings. Keep `SUPABASE_SERVICE_ROLE_KEY` and `OPENAI_API_KEY` server-only.
 
 ## Notes
 

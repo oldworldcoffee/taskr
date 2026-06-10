@@ -3,6 +3,7 @@ import { httpError, originFor } from './taskr.js';
 
 const INVENTORY_FUNCTIONS = new Set([
   'inventoryDownloadCatalogTemplate',
+  'inventoryExtractInvoiceImage',
   'inventoryImportCatalog',
   'inventoryImportCatalogCsv',
   'inventoryExportCatalog',
@@ -22,6 +23,7 @@ const INVENTORY_FUNCTIONS = new Set([
 
 const INVENTORY_ALIASES = {
   downloadCatalogTemplate: 'inventoryDownloadCatalogTemplate',
+  extractInvoiceImage: 'inventoryExtractInvoiceImage',
   importCatalog: 'inventoryImportCatalog',
   importCatalogCsv: 'inventoryImportCatalogCsv',
   exportCatalog: 'inventoryExportCatalog',
@@ -115,6 +117,260 @@ function toBool(value, fallback = false) {
   if (value == null || value === '') return fallback;
   const normalized = String(value).trim().toLowerCase();
   return ['yes', 'true', '1', 'y', 'active'].includes(normalized);
+}
+
+function parseJsonObject(text) {
+  const raw = String(text || '').trim();
+  const withoutFence = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try {
+    return JSON.parse(withoutFence);
+  } catch {
+    const start = withoutFence.indexOf('{');
+    const end = withoutFence.lastIndexOf('}');
+    if (start >= 0 && end > start) return JSON.parse(withoutFence.slice(start, end + 1));
+    throw httpError(502, 'Invoice extraction returned unreadable data.');
+  }
+}
+
+function normalizeDate(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+
+  const numeric = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (numeric) {
+    const [, month, day, year] = numeric;
+    const fullYear = year.length === 2 ? `20${year}` : year;
+    return `${fullYear.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
+function normalizeMatchText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\bchoc\b/g, 'chocolate')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function meaningfulWords(value) {
+  const stop = new Set(['the', 'and', 'with', 'blend', 'barista', 'califia', 'case', 'cs', 'pl', 'plt', 'milk']);
+  return normalizeMatchText(value).split(' ').filter((word) => word.length > 1 && !stop.has(word));
+}
+
+function candidateInvoiceCodes(extracted) {
+  return [
+    extracted.vendor_sku,
+    extracted.vendor_item_number,
+    extracted.item_number,
+    extracted.product_code,
+    extracted.sku,
+  ].map(normalizeMatchText).filter(Boolean);
+}
+
+function optionCodes(option = {}) {
+  return [
+    option.product_code,
+    option.vendor_sku,
+    option.sku,
+  ].map(normalizeMatchText).filter(Boolean);
+}
+
+function optionNames(option = {}) {
+  return [
+    option.product_name,
+    option.name,
+  ].map(normalizeMatchText).filter(Boolean);
+}
+
+function purchaseOptionMatch(extracted, catalogItems = []) {
+  const codes = candidateInvoiceCodes(extracted);
+  const invoiceName = normalizeMatchText(extracted.item_name || extracted.name || extracted.description);
+
+  for (const item of catalogItems) {
+    for (const option of item.purchase_options || []) {
+      const exactCodeMatch = codes.length > 0 && optionCodes(option).some((code) => codes.includes(code));
+      if (exactCodeMatch) {
+        return { item, score: 100, reason: 'purchase_option_code' };
+      }
+      if (codes.length > 0) continue;
+
+      if (invoiceName) {
+        for (const optionName of optionNames(option)) {
+          if (!optionName) continue;
+          if (optionName === invoiceName) return { item, score: 96, reason: 'purchase_option_name' };
+          if (invoiceName.includes(optionName) || optionName.includes(invoiceName)) {
+            const sharedLength = Math.min(invoiceName.length, optionName.length);
+            if (sharedLength >= 8) return { item, score: 90, reason: 'purchase_option_name' };
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function itemNameMatch(extracted, catalogItems = []) {
+  const invoiceName = normalizeMatchText(extracted.item_name || extracted.name || extracted.description);
+  const invoiceWords = new Set(meaningfulWords(invoiceName));
+  if (!invoiceName && invoiceWords.size === 0) return null;
+
+  let best = null;
+  let bestScore = 0;
+  for (const item of catalogItems) {
+    const itemName = normalizeMatchText(item.name);
+    const itemWords = meaningfulWords(item.name);
+    let score = 0;
+
+    if (itemName && invoiceName === itemName) score = 100;
+    else if (itemName && (invoiceName.includes(itemName) || itemName.includes(invoiceName))) {
+      score = Math.min(invoiceName.length, itemName.length) >= 7 ? 92 : 70;
+    }
+
+    if (itemWords.length) {
+      const matchedWords = itemWords.filter((word) => invoiceWords.has(word));
+      const coverage = matchedWords.length / itemWords.length;
+      const overlapScore = coverage * 90 + Math.min(matchedWords.length, 4) * 2;
+      score = Math.max(score, overlapScore);
+    }
+
+    if (score > bestScore) {
+      best = item;
+      bestScore = score;
+    }
+  }
+
+  return bestScore >= 72 ? { item: best, score: bestScore, reason: 'item_name' } : null;
+}
+
+function matchCatalogItem(extracted, catalogItems = []) {
+  const explicitId = String(extracted.item_id || extracted.itemId || '').trim();
+  if (explicitId) {
+    const explicitItem = catalogItems.find((item) => item.id === explicitId);
+    if (explicitItem) {
+      const existingPurchaseOption = purchaseOptionMatch(extracted, [explicitItem]);
+      return {
+        item_id: explicitItem.id,
+        match_type: existingPurchaseOption ? existingPurchaseOption.reason : 'catalog_item',
+        purchase_option_matched: Boolean(existingPurchaseOption),
+        purchase_option_missing: !existingPurchaseOption,
+        match_score: existingPurchaseOption?.score || 90,
+      };
+    }
+  }
+
+  const purchaseMatch = purchaseOptionMatch(extracted, catalogItems);
+  if (purchaseMatch) {
+    return {
+      item_id: purchaseMatch.item.id,
+      match_type: purchaseMatch.reason,
+      purchase_option_matched: true,
+      purchase_option_missing: false,
+      match_score: purchaseMatch.score,
+    };
+  }
+
+  const itemMatch = itemNameMatch(extracted, catalogItems);
+  if (!itemMatch) return null;
+  return {
+    item_id: itemMatch.item.id,
+    match_type: itemMatch.reason,
+    purchase_option_matched: false,
+    purchase_option_missing: true,
+    match_score: itemMatch.score,
+  };
+}
+
+function normalizeExtractedItems(rawItems = [], catalogItems = []) {
+  return (Array.isArray(rawItems) ? rawItems : [])
+    .map((item) => {
+      const itemName = String(item.item_name || item.name || item.description || '').trim();
+      if (!itemName) return null;
+
+      const match = matchCatalogItem(item, catalogItems);
+      const itemId = match?.item_id || null;
+      const quantity = toNumber(item.quantity ?? item.qty ?? item.shipped_quantity ?? item.ordered_quantity, 0);
+      const totalCost = toNumber(item.total_cost ?? item.line_total ?? item.extended_price ?? item.extended_cost ?? item.total, 0);
+      const unitCost = toNumber(item.unit_cost ?? item.unit_price ?? item.price ?? item.cost, quantity > 0 && totalCost > 0 ? totalCost / quantity : 0);
+      const unitOfMeasure = String(item.unit_of_measure || item.uom || '').trim();
+
+      return {
+        item_name: itemName,
+        item_id: itemId,
+        vendor_sku: String(item.vendor_sku || item.vendor_item_number || item.item_number || item.product_code || item.sku || '').trim(),
+        pack_size: String(item.pack_size || item.pack || '').trim(),
+        match_type: match?.match_type || null,
+        match_score: match?.match_score || 0,
+        purchase_option_matched: match?.purchase_option_matched === true,
+        purchase_option_missing: match?.purchase_option_missing === true,
+        quantity,
+        unit_cost: unitCost,
+        unit_of_measure: unitOfMeasure,
+        total_cost: totalCost || quantity * unitCost,
+        matched: Boolean(itemId),
+      };
+    })
+    .filter(Boolean);
+}
+
+function guessContentType(fileUrl) {
+  const clean = String(fileUrl || '').split('?')[0].toLowerCase();
+  if (clean.endsWith('.png')) return 'image/png';
+  if (clean.endsWith('.webp')) return 'image/webp';
+  if (clean.endsWith('.gif')) return 'image/gif';
+  return 'image/jpeg';
+}
+
+function parseSupabaseStorageUrl(fileUrl) {
+  try {
+    const parsed = new URL(fileUrl);
+    const match = parsed.pathname.match(/\/storage\/v1\/object\/(?:public|sign|authenticated)\/([^/]+)\/(.+)$/);
+    if (!match) return null;
+    return {
+      bucket: decodeURIComponent(match[1]),
+      path: decodeURIComponent(match[2]),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function blobToDataUrl(blob, fallbackContentType) {
+  const contentType = blob.type || fallbackContentType || 'application/octet-stream';
+  const buffer = Buffer.from(await blob.arrayBuffer());
+  return `data:${contentType};base64,${buffer.toString('base64')}`;
+}
+
+async function imageUrlToDataUrl(fileUrl, client) {
+  if (String(fileUrl || '').startsWith('data:')) return fileUrl;
+
+  try {
+    const response = await fetch(fileUrl);
+    if (response.ok) {
+      const contentType = response.headers.get('content-type') || guessContentType(fileUrl);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      return `data:${contentType};base64,${buffer.toString('base64')}`;
+    }
+  } catch {
+    // Fall back to service-role storage download below when available.
+  }
+
+  const object = parseSupabaseStorageUrl(fileUrl);
+  if (object?.bucket && object?.path && client?.storage) {
+    const { data, error } = await client.storage.from(object.bucket).download(object.path);
+    if (!error && data) return blobToDataUrl(data, guessContentType(fileUrl));
+  }
+
+  throw httpError(400, 'The uploaded invoice image could not be read from storage.');
 }
 
 function isCommissaryLocation(location, settings = []) {
@@ -214,6 +470,46 @@ async function updateRecord(client, table, id, companyId, patch) {
     .single();
   if (error) throw error;
   return data;
+}
+
+function numericQuantity(value) {
+  const quantity = Number(value || 0);
+  return Number.isFinite(quantity) ? quantity : 0;
+}
+
+function stockQuantityForLine(item, quantity, orderedQuantity) {
+  const multiplier = numericQuantity(item.order_unit_multiplier);
+  if (multiplier > 0) return quantity * multiplier;
+
+  const orderedStockQuantity = numericQuantity(item.stock_quantity_ordered);
+  if (orderedStockQuantity > 0 && orderedQuantity > 0) {
+    return (orderedStockQuantity / orderedQuantity) * quantity;
+  }
+
+  return quantity;
+}
+
+function commissaryOrderLine(item, quantity, orderedQuantity, fulfilledQuantity = 0) {
+  const unitCost = numericQuantity(item.unit_cost);
+  const stockQuantityOrdered = stockQuantityForLine(item, quantity, orderedQuantity);
+  const stockQuantityFulfilled = stockQuantityForLine(item, fulfilledQuantity, orderedQuantity);
+
+  return {
+    ...item,
+    variant_quantities: null,
+    quantity_ordered: quantity,
+    quantity_fulfilled: fulfilledQuantity,
+    quantity_received: fulfilledQuantity,
+    stock_quantity_ordered: stockQuantityOrdered,
+    stock_quantity_fulfilled: stockQuantityFulfilled,
+    stock_quantity_received: stockQuantityFulfilled,
+    unit_cost: unitCost,
+    total_cost: quantity * unitCost,
+  };
+}
+
+function appendNote(existingNotes, note) {
+  return [existingNotes, note].filter(Boolean).join('\n\n');
 }
 
 async function deleteRecord(client, table, id, companyId) {
@@ -522,19 +818,66 @@ async function fulfillCommissaryOrder(client, user, body) {
   const companyId = user.company_id;
   const order = await getRecord(client, 'inventory_orders', body.order_id, companyId);
   if (!order) throw httpError(404, 'Order not found');
-  const fulfillmentItems = body.fulfillment_items || [];
-  const totalAmount = fulfillmentItems.reduce((sum, item) => sum + Number(item.quantity_fulfilled || 0) * Number(item.unit_cost || 0), 0);
-  const allFulfilled = fulfillmentItems.every((item) => Number(item.quantity_fulfilled || 0) >= Number(item.quantity_ordered || 0));
+  const requestedItems = body.fulfillment_items || [];
+  const fulfilledItems = [];
+  const remainingItems = [];
+
+  for (const item of requestedItems) {
+    const orderedQuantity = numericQuantity(item.quantity_ordered);
+    const fulfilledQuantity = Math.min(
+      orderedQuantity,
+      Math.max(0, numericQuantity(item.quantity_fulfilled))
+    );
+    const remainingQuantity = Math.max(0, orderedQuantity - fulfilledQuantity);
+
+    if (fulfilledQuantity > 0) {
+      fulfilledItems.push(commissaryOrderLine(item, fulfilledQuantity, orderedQuantity, fulfilledQuantity));
+    }
+
+    if (remainingQuantity > 0) {
+      remainingItems.push(commissaryOrderLine(item, remainingQuantity, orderedQuantity, 0));
+    }
+  }
+
+  if (fulfilledItems.length === 0) {
+    throw httpError(400, 'At least one item quantity must be fulfilled.');
+  }
+
+  const splitRequested = body.split_option === 'split' && remainingItems.length > 0;
+  const allFulfilled = remainingItems.length === 0;
+  const totalAmount = fulfilledItems.reduce((sum, item) => sum + Number(item.total_cost || 0), 0);
+  const remainingAmount = remainingItems.reduce((sum, item) => sum + Number(item.total_cost || 0), 0);
+  const fulfilledAt = nowIso();
+  const orderNumber = order.order_number || `CO-${Date.now().toString().slice(-6)}`;
+  let splitOrder = null;
+
+  if (splitRequested) {
+    const splitOrderNumber = `${orderNumber} - Split`;
+    splitOrder = await createRecord(client, 'inventory_orders', {
+      company_id: companyId,
+      type: order.type || 'commissary',
+      status: 'viewed',
+      location_id: order.location_id,
+      vendor_id: order.vendor_id,
+      order_number: splitOrderNumber,
+      items: remainingItems,
+      total_amount: remainingAmount,
+      notes: appendNote(order.notes, `Split from ${orderNumber}`),
+      viewed_at: fulfilledAt,
+      sent_at: order.sent_at || fulfilledAt,
+    });
+  }
+
   const fulfillment = await createRecord(client, 'inventory_commissary_fulfillments', {
     company_id: companyId,
     order_id: order.id,
-    order_number: order.order_number,
+    order_number: orderNumber,
     retail_location_id: order.location_id,
     commissary_location_id: body.commissary_location_id,
-    items: fulfillmentItems,
+    items: fulfilledItems,
     notes: body.notes || '',
-    status: allFulfilled ? 'fulfilled' : 'partial',
-    fulfillment_date: nowIso(),
+    status: allFulfilled || splitRequested ? 'fulfilled' : 'partial',
+    fulfillment_date: fulfilledAt,
     total_amount: totalAmount,
   });
   const invoice = await createRecord(client, 'inventory_invoices', {
@@ -545,23 +888,164 @@ async function fulfillCommissaryOrder(client, user, body) {
     invoice_number: `CI-${Date.now().toString().slice(-6)}`,
     invoice_date: new Date().toISOString().slice(0, 10),
     status: 'pending_review',
-    extracted_items: fulfillmentItems
-      .filter((item) => Number(item.quantity_fulfilled || 0) > 0)
-      .map((item) => ({
-        item_id: item.item_id,
-        item_name: item.item_name,
-        quantity: Number(item.quantity_fulfilled || 0),
-        unit_cost: Number(item.unit_cost || 0),
-        total_cost: Number(item.quantity_fulfilled || 0) * Number(item.unit_cost || 0),
-        matched: true,
-      })),
+    extracted_items: fulfilledItems.map((item) => ({
+      item_id: item.item_id,
+      item_name: item.item_name,
+      quantity: Number(item.quantity_fulfilled || 0),
+      unit_cost: Number(item.unit_cost || 0),
+      total_cost: Number(item.total_cost || 0),
+      matched: true,
+    })),
     total_amount: totalAmount,
   });
-  await updateRecord(client, 'inventory_orders', order.id, companyId, {
-    status: allFulfilled ? 'fulfilled' : 'partially_fulfilled',
-    fulfilled_at: nowIso(),
+
+  const nextOrderPatch = splitRequested || allFulfilled
+    ? {
+        status: 'fulfilled',
+        fulfilled_at: fulfilledAt,
+        items: fulfilledItems,
+        total_amount: totalAmount,
+      }
+    : {
+        status: 'partial',
+        fulfilled_at: fulfilledAt,
+        items: remainingItems,
+        total_amount: remainingAmount,
+      };
+
+  if (splitRequested) {
+    nextOrderPatch.notes = appendNote(order.notes, `Remaining items moved to ${splitOrder.order_number}`);
+  }
+
+  await updateRecord(client, 'inventory_orders', order.id, companyId, nextOrderPatch);
+  return { success: true, fulfillment, invoice, split_order: splitOrder };
+}
+
+async function extractInvoiceImage(client, user, body) {
+  const fileUrl = String(body.file_url || body.fileUrl || body.file_urls?.[0] || '').trim();
+  if (!fileUrl) throw httpError(400, 'Invoice image is required.');
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return {
+      vendor_name: '',
+      invoice_number: '',
+      invoice_date: null,
+      total_amount: 0,
+      items: [],
+      warning: 'Scanned invoice parsing is not configured yet. The image was uploaded, and you can add lines manually.',
+    };
+  }
+
+  const [catalogItems, vendors] = await Promise.all([
+    fetchCompanyRows(client, 'inventory_items', user.company_id),
+    fetchCompanyRows(client, 'inventory_vendors', user.company_id).catch(() => []),
+  ]);
+  const activeCatalogItems = catalogItems
+    .filter((item) => item.is_active !== false)
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      sku: item.sku || '',
+      category: item.category || '',
+      unit_of_measure: item.unit_of_measure || '',
+      purchase_options: (item.purchase_options || []).slice(0, 4).map((option) => ({
+        vendor_name: option.vendor_name || '',
+        product_name: option.product_name || '',
+        product_code: option.product_code || option.vendor_sku || '',
+        unit_of_measure: option.unit_of_measure || '',
+      })),
+    }))
+    .slice(0, 600);
+  const activeVendorNames = vendors
+    .filter((vendor) => vendor.is_active !== false)
+    .map((vendor) => String(vendor.name || '').trim())
+    .filter(Boolean)
+    .slice(0, 200);
+
+  const model = process.env.OPENAI_INVOICE_MODEL || process.env.OPENAI_VISION_MODEL || 'gpt-4o-mini';
+  const imageUrl = await imageUrlToDataUrl(fileUrl, client);
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'You extract structured data from food, beverage, retail, and supplier invoices.',
+            'Return JSON only with vendor_name, invoice_number, invoice_date, subtotal_amount, tax_amount, freight_amount, total_amount, and items.',
+            'vendor_name means the company issuing the invoice: the supplier/seller/remit-to company, usually shown in the logo/header, "from", "remit to", "mail payments to", or seller area.',
+            'Never use bill-to, sold-to, ship-to, customer, customer number, customer PO, delivery address, or buyer account names as vendor_name.',
+            'If an invoice has both a supplier header and sold-to/bill-to/customer block, choose the supplier header/remit-to company.',
+            'For Chefs Warehouse / Greenleaf invoices, vendor_name should be Chefs Warehouse or The Chefs Warehouse West Coast LLC, not the Old World Coffee customer name.',
+            'Extract every product/service row in the invoice line-item table. Do not omit rows just because there is no catalog match.',
+            'For items, return item_name, vendor_sku, pack_size, quantity, unit_cost, unit_of_measure, total_cost, item_id, and matched.',
+            'pack_size must be the exact printed pack-size line when present, such as "12/32 OZ CS" or "160/2 OZ CS"; do not rewrite or summarize it.',
+            'A pack size like "160/2 OZ CS" means 160 individual pieces per case, each piece is 2 oz. Do not treat that as 160 oz or 2 cases.',
+            'A pack size like "12/32 OZ CS" means 12 inner units per case, each inner unit is 32 oz.',
+            'Match by existing purchase option product_code/vendor SKU first.',
+            'If no purchase option matches, match by inventory item name or close product-name overlap and still return that item_id.',
+            'For example, vendor text like OAT MILK BARISTA BLEND should match an Oat Milk inventory item; COOKIE DOUGH CHOC CHIP COOKIE should match a Chocolate Chip Cookie item when present.',
+            'Use shipped quantity when both ordered and shipped quantities are visible.',
+            'Use the invoice UOM column for unit_of_measure, for example CS, EA, LB, OZ, or GAL.',
+            'Only use item_id values from the provided catalog. Use null when no confident catalog match exists.',
+            'Read invoice numbers, dates, line totals, subtotal, fees, tax, and final total exactly as printed.',
+          ].join(' '),
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: [
+                'Catalog items for matching:',
+                JSON.stringify(activeCatalogItems),
+                '',
+                'Known vendors for this company:',
+                JSON.stringify(activeVendorNames),
+                '',
+                'Extract the invoice from the image. Return all rows in the line-item table and all visible totals.',
+                'Use the known vendors only as hints. If the printed invoice supplier is not in that list, still return the printed supplier.',
+                'If the invoice has fees like fuel, freight, bottle deposit, or surcharge, include them in total_amount but not as product line items.',
+              ].join('\n'),
+            },
+            {
+              type: 'image_url',
+              image_url: { url: imageUrl, detail: 'high' },
+            },
+          ],
+        },
+      ],
+    }),
   });
-  return { success: true, fulfillment, invoice };
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw httpError(response.status, payload.error?.message || 'Invoice image extraction failed.');
+  }
+
+  const content = payload.choices?.[0]?.message?.content;
+  const parsed = parseJsonObject(content);
+  const items = normalizeExtractedItems(parsed.items, activeCatalogItems);
+
+  return {
+    vendor_name: String(parsed.vendor_name || '').trim(),
+    invoice_number: String(parsed.invoice_number || '').trim(),
+    invoice_date: normalizeDate(parsed.invoice_date),
+    subtotal_amount: toNumber(parsed.subtotal_amount, 0),
+    tax_amount: toNumber(parsed.tax_amount, 0),
+    freight_amount: toNumber(parsed.freight_amount ?? parsed.fuel_amount ?? parsed.delivery_fee, 0),
+    total_amount: toNumber(parsed.total_amount ?? parsed.invoice_total ?? parsed.amount_due, 0),
+    items,
+    warning: items.length === 0 ? 'AI did not find any line items. Add lines manually or try a clearer photo.' : '',
+  };
 }
 
 async function scrapeProductImage(body) {
@@ -774,6 +1258,9 @@ export async function handleInventoryFunction(name, req, client, user, body) {
         '"Sample Item","SKU001","Produce","EA",2.50,No,,"Fresh produce item","Example Vendor","vendor@example.com","Product ABC","ABC123","6x10oz",6,"Pack",10,100,50,Yes',
         '"Another Item","SKU002","Dairy","EA",5.75,No,,"Dairy product","Dairy Supplier","dairy@example.com","Milk Carton","MILK001","12 pack",12,"Carton",1,50,25,Yes',
       ].join('\n');
+
+    case 'inventoryExtractInvoiceImage':
+      return extractInvoiceImage(client, user, body);
 
     case 'inventoryImportCatalog':
       return importCatalog(client, user, body.file_url);

@@ -53,6 +53,7 @@ import InventoryTransfers from "@/pages/inventory/Transfers";
 import InventoryInvoices from "@/pages/inventory/Invoices";
 import InventoryVendors from "@/pages/inventory/Vendors";
 import InventoryReports from "@/pages/inventory/Reports.jsx?v=taskr-stock-today-20260609";
+import InventoryRecipesPricing from "@/pages/inventory/RecipesPricing";
 import InventorySettings from "@/pages/inventory/Settings";
 import VendorOrderView from "@/pages/inventory/VendorOrderView";
 
@@ -158,6 +159,7 @@ const AuthenticatedApp = () => {
               <Route path="invoices" element={<InventoryInvoices />} />
               <Route path="vendors" element={<InventoryVendors />} />
               <Route path="reports" element={<InventoryReports />} />
+              <Route path="recipes-pricing" element={<InventoryRecipesPricing />} />
               <Route path="settings" element={<InventorySettings />} />
             </Route>
           </Route>

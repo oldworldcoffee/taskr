@@ -4,15 +4,103 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { Plus, Trash2, ChevronDown, ChevronUp, Check, Shirt, GripVertical } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronUp, Check, ChevronsUpDown, Shirt, GripVertical } from 'lucide-react';
 import { toast } from 'sonner';
 import { base44 } from '@/api/base44Client';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import OptionExpandedFields from './OptionExpandedFields';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { CATEGORY_GROUPS, categoryForName, categoryGroupLabel } from '@/lib/inventoryCategories';
 
 const UOM_OPTIONS = ['EA', 'fl-oz', 'oz', 'ml', 'L', 'Qt', 'gal', 'g', 'gr', 'kg', 'lb'];
 const EMPTY_OPTION = { vendor_id: '', vendor_name: '', product_name: '', product_code: '', unit_cost: '', unit_of_measure: '', inner_pack_uom: '', inner_pack_units: '', inner_pack_name: '', packs_per_case: '', is_preferred: false, notes: '', location_ids: null };
+
+function CategoryPicker({ value, categories = [], onChange }) {
+  const [open, setOpen] = useState(false);
+  const activeCategories = categories.filter((category) => category.is_active !== false);
+  const selectedCategory = categoryForName(activeCategories, value);
+  const [mainCategory, setMainCategory] = useState(selectedCategory?.main_category || 'ingredient');
+
+  useEffect(() => {
+    const nextSelected = categoryForName(activeCategories, value);
+    if (nextSelected?.main_category) setMainCategory(nextSelected.main_category);
+  }, [activeCategories, value]);
+
+  const subcategories = activeCategories
+    .filter((category) => category.main_category === mainCategory)
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name))
+    .map((category) => category.name);
+
+  const handleMainCategoryChange = (nextMainCategory) => {
+    setMainCategory(nextMainCategory);
+    const currentCategory = categoryForName(activeCategories, value);
+    if (currentCategory?.main_category !== nextMainCategory) onChange('');
+  };
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div>
+        <Label>Category</Label>
+        <Select value={mainCategory} onValueChange={handleMainCategoryChange}>
+          <SelectTrigger className="mt-1">
+            <SelectValue placeholder="Choose category" />
+          </SelectTrigger>
+          <SelectContent>
+            {CATEGORY_GROUPS.map((group) => (
+              <SelectItem key={group.value} value={group.value}>{group.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div>
+        <Label>Subcategory</Label>
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              role="combobox"
+              aria-expanded={open}
+              className="mt-1 h-10 w-full justify-between px-3 font-normal"
+              disabled={subcategories.length === 0}
+            >
+              <span className={`truncate ${value ? 'text-foreground' : 'text-muted-foreground'}`}>
+                {value || 'Choose subcategory'}
+              </span>
+              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[min(420px,calc(100vw-2rem))] p-0" align="start">
+            <Command>
+              <CommandInput placeholder="Search subcategories..." />
+              <CommandList>
+                <CommandEmpty>No subcategory found.</CommandEmpty>
+                <CommandGroup>
+                  {subcategories.map((name) => (
+                    <CommandItem
+                      key={name}
+                      value={`${name} ${categoryGroupLabel(mainCategory)}`}
+                      onSelect={() => {
+                        onChange(name);
+                        setOpen(false);
+                      }}
+                    >
+                      <Check className={`h-4 w-4 ${value === name ? 'opacity-100' : 'opacity-0'}`} />
+                      <span className="truncate">{name}</span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+      </div>
+    </div>
+  );
+}
 
 export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave, saving, vendors, locations = [], categories, draftKey }) {
   const isMobile = useIsMobile();
@@ -253,10 +341,12 @@ export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave
               <Label>Item Name *</Label>
               <Input className="mt-1" value={form.name || ''} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
             </div>
-            <div>
-              <Label>Category</Label>
-              <Input className="mt-1" value={form.category || ''} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} list="cats-dlg" />
-              <datalist id="cats-dlg">{(categories || []).map(c => <option key={c} value={c} />)}</datalist>
+            <div className="col-span-2">
+              <CategoryPicker
+                value={form.category || ''}
+                categories={categories || []}
+                onChange={(category) => setForm(f => ({ ...f, category }))}
+              />
             </div>
             <div>
               <Label>Unit of Measure *</Label>

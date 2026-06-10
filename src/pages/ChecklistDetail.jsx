@@ -67,13 +67,15 @@ export default function ChecklistDetail() {
 
   // Real-time sync
   useEffect(() => {
+    const getEventRecord = (event) => event.new || event.old || event.data || {};
+
     const unsub1 = base44.entities.TaskCompletion.subscribe((event) => {
-      if (event.data?.instance_id === instanceId || event.type === 'delete') {
+      if (getEventRecord(event).instance_id === instanceId) {
         refetchCompletions();
       }
     });
     const unsub2 = base44.entities.ChecklistInstance.subscribe((event) => {
-      if (event.id === instanceId) {
+      if (getEventRecord(event).id === instanceId) {
         queryClient.invalidateQueries({ queryKey: ["instance", instanceId] });
       }
     });
@@ -140,7 +142,7 @@ export default function ChecklistDetail() {
   const optionalRemaining = scheduledTasks.filter((t) => !t.is_required && !completionMap[t.id] && !flagMap[t.id]).length;
 
   const handleComplete = async (taskId, value) => {
-    await base44.entities.TaskCompletion.create({
+    const completion = await base44.entities.TaskCompletion.create({
       instance_id: instanceId,
       task_id: taskId,
       company_id: user.company_id || instance?.company_id,
@@ -149,6 +151,16 @@ export default function ChecklistDetail() {
       completed_at: new Date().toISOString(),
       value,
     });
+
+    queryClient.setQueryData(["completions", instanceId], (current = []) => {
+      const alreadyCompleted = current.some((item) => !item.is_flag && item.task_id === taskId);
+      if (alreadyCompleted) {
+        return current.map((item) => (!item.is_flag && item.task_id === taskId ? completion : item));
+      }
+      return [...current, completion];
+    });
+
+    return completion;
   };
 
   const handleSubmit = async () => {

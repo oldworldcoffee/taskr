@@ -3,13 +3,20 @@ import { useState } from 'react';
 import { isCommissaryLocation } from '@/lib/inventoryLocations';
 import { getOrderUnit } from '@/lib/inventoryOrderUnits';
 
+const asNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+};
+const money = (value) => asNumber(value).toFixed(2);
+
 export default function VendorOptionSelector({ item, currentVendorId, onSelectVendor, locations, selectedLocation }) {
   const [isOpen, setIsOpen] = useState(false);
   
   if (!item || !item.purchase_options) return null;
   
-  const purchaseOptions = item.purchase_options || [];
-  const location = locations.find(l => l.id === selectedLocation);
+  const purchaseOptions = Array.isArray(item.purchase_options) ? item.purchase_options : [];
+  const locationList = Array.isArray(locations) ? locations : [];
+  const location = locationList.find(l => l.id === selectedLocation);
   
   // Get all unique vendor options for this item
   let allOptions = [];
@@ -63,7 +70,7 @@ export default function VendorOptionSelector({ item, currentVendorId, onSelectVe
   }
   
   const currentOption = allOptions.find(o => o.vendor_id === currentVendorId) || allOptions[0];
-  const minPrice = Math.min(...allOptions.map(o => o.unit_cost));
+  const minPrice = Math.min(...allOptions.map(o => asNumber(o.unit_cost)));
   
   return (
     <div className="mt-2 border border-border rounded-lg overflow-hidden bg-background">
@@ -82,9 +89,11 @@ export default function VendorOptionSelector({ item, currentVendorId, onSelectVe
       {isOpen && (
         <div className="border-t border-border divide-y divide-border max-h-48 overflow-y-auto">
           {allOptions.map((option) => {
+            const optionCost = asNumber(option.unit_cost);
+            const currentCost = asNumber(currentOption.unit_cost);
             const isCurrent = option.vendor_id === currentVendorId;
-            const isCheapest = option.unit_cost === minPrice;
-            const priceDiff = option.unit_cost - currentOption.unit_cost;
+            const isCheapest = optionCost === minPrice;
+            const priceDiff = optionCost - currentCost;
             const isCurrentCheaper = priceDiff < 0;
             const isCurrentMoreExpensive = priceDiff > 0;
             const orderUnit = getOrderUnit(item, option);
@@ -96,7 +105,7 @@ export default function VendorOptionSelector({ item, currentVendorId, onSelectVe
                   isCurrent ? 'bg-primary/5' : 'hover:bg-muted/50'
                 }`}
                 onClick={() => {
-                  onSelectVendor(option.vendor_id, option.unit_cost);
+                  onSelectVendor(option.vendor_id, optionCost);
                   setIsOpen(false);
                 }}
               >
@@ -114,7 +123,7 @@ export default function VendorOptionSelector({ item, currentVendorId, onSelectVe
                   </div>
                   <div className="flex items-center gap-2 mt-0.5">
                     <span className="text-xs text-muted-foreground">
-                      ${option.unit_cost.toFixed(2)} / {orderUnit.label}
+                      ${money(option.unit_cost)} / {orderUnit.label}
                     </span>
                     {option.product_code && (
                       <span className="text-[10px] text-muted-foreground">{option.product_code}</span>
@@ -130,7 +139,7 @@ export default function VendorOptionSelector({ item, currentVendorId, onSelectVe
                       {priceDiff !== 0 && (
                         <span>
                           {priceDiff < 0 ? 'Save ' : 'Pay '}
-                          ${Math.abs(priceDiff).toFixed(2)}
+                          ${money(Math.abs(priceDiff))}
                         </span>
                       )}
                     </div>

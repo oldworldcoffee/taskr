@@ -11,7 +11,7 @@ export default function FulfillmentDialog({ open, onOpenChange, order, commissar
   const [fulfillmentItems, setFulfillmentItems] = useState([]);
   const [notes, setNotes] = useState('');
   const [fulfilling, setFulfilling] = useState(false);
-  const [splitOption, setSplitOption] = useState('close');
+  const [splitOption, setSplitOption] = useState('split');
   const [variants, setVariants] = useState([]);
 
   useEffect(() => {
@@ -55,6 +55,7 @@ export default function FulfillmentDialog({ open, onOpenChange, order, commissar
       });
       setFulfillmentItems(expandedItems);
       setNotes('');
+      setSplitOption('split');
     }
   }, [order, open, variants]);
 
@@ -79,7 +80,7 @@ export default function FulfillmentDialog({ open, onOpenChange, order, commissar
         split_option: hasPartialFulfillment ? splitOption : 'close'
       });
 
-      toast.success(hasPartialFulfillment && splitOption === 'split' ? 'Partial fulfillment complete! Split invoice created.' : 'Order fulfilled! Invoice generated.');
+      toast.success(hasPartialFulfillment && splitOption === 'split' ? 'Partial fulfillment complete! Split order created.' : 'Order fulfilled! Invoice generated.');
       onFulfilled?.(response.data);
       onOpenChange(false);
     } catch (error) {
@@ -184,8 +185,8 @@ export default function FulfillmentDialog({ open, onOpenChange, order, commissar
                     className="w-4 h-4 text-primary"
                   />
                   <div>
-                    <span className="text-sm font-medium text-amber-900">Close Invoice</span>
-                    <p className="text-xs text-amber-700">Complete this invoice with fulfilled items only. Remaining items will stay on the order.</p>
+                    <span className="text-sm font-medium text-amber-900">Keep Remaining on This Order</span>
+                    <p className="text-xs text-amber-700">Generate an invoice for fulfilled items now and leave the remaining quantities open.</p>
                   </div>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -198,8 +199,8 @@ export default function FulfillmentDialog({ open, onOpenChange, order, commissar
                     className="w-4 h-4 text-primary"
                   />
                   <div>
-                    <span className="text-sm font-medium text-amber-900">Split & Create New Invoice</span>
-                    <p className="text-xs text-amber-700">Create a second invoice for the remaining items to be fulfilled later.</p>
+                    <span className="text-sm font-medium text-amber-900">Split & Create Follow-up Order</span>
+                    <p className="text-xs text-amber-700">Move remaining quantities to a viewed order with the same order number plus "- Split".</p>
                   </div>
                 </label>
               </div>

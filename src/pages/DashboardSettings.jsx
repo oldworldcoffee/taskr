@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { base44 } from "@/api/base44Client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/AuthContext";
@@ -99,12 +99,39 @@ export default function DashboardSettings() {
   const [locDialog, setLocDialog] = useState(false);
   const [locName, setLocName] = useState("");
   const [locAddress, setLocAddress] = useState("");
+  const [locDrawerAmount, setLocDrawerAmount] = useState("");
   const [editLocDialog, setEditLocDialog] = useState(false);
   const [editingLoc, setEditingLoc] = useState(null);
   const [editLocName, setEditLocName] = useState("");
   const [editLocAddress, setEditLocAddress] = useState("");
+  const [editLocDrawerAmount, setEditLocDrawerAmount] = useState("");
   const [deleteLocDialog, setDeleteLocDialog] = useState(false);
   const [deletingLoc, setDeletingLoc] = useState(null);
+  const [companyDrawerAmount, setCompanyDrawerAmount] = useState("200.00");
+  const [companyDrawerSaving, setCompanyDrawerSaving] = useState(false);
+
+  const formatMoneyInput = (value) => {
+    const amount = Number(value);
+    return Number.isFinite(amount) ? amount.toFixed(2) : "";
+  };
+
+  const normalizeMoney = (value) => Math.max(0, Number.parseFloat(value) || 0);
+  const normalizeOptionalMoney = (value) => (String(value).trim() === "" ? null : normalizeMoney(value));
+  const hasLocationDrawerOverride = (loc) => loc.cash_drawer_amount !== null && loc.cash_drawer_amount !== undefined;
+  const drawerForLocation = (loc) => hasLocationDrawerOverride(loc)
+    ? Number(loc.cash_drawer_amount)
+    : normalizeMoney(company?.cash_drawer_amount ?? 200);
+  const preventNegativeAmountKey = (event) => {
+    if (["-", "+", "e", "E"].includes(event.key)) {
+      event.preventDefault();
+    }
+  };
+
+  useEffect(() => {
+    if (company) {
+      setCompanyDrawerAmount(formatMoneyInput(company.cash_drawer_amount ?? 200));
+    }
+  }, [company?.id, company?.cash_drawer_amount]);
 
   const { data: locations = [] } = useQuery({
     queryKey: ["locations"],
@@ -127,7 +154,11 @@ export default function DashboardSettings() {
   const addLocation = async () => {
     if (!locName.trim()) return;
     try {
-      const res = await base44.functions.invoke('createLocation', { name: locName.trim(), address: locAddress.trim() });
+      const res = await base44.functions.invoke('createLocation', {
+        name: locName.trim(),
+        address: locAddress.trim(),
+        cash_drawer_amount: normalizeOptionalMoney(locDrawerAmount),
+      });
       if (res.data.error) {
         toast.error(res.data.error);
         return;
@@ -136,6 +167,7 @@ export default function DashboardSettings() {
       setLocDialog(false);
       setLocName("");
       setLocAddress("");
+      setLocDrawerAmount("");
       toast.success("Location added");
     } catch (err) {
       toast.error(err.message || "Failed to add location");
@@ -151,15 +183,31 @@ export default function DashboardSettings() {
     setEditingLoc(loc);
     setEditLocName(loc.name);
     setEditLocAddress(loc.address || "");
+    setEditLocDrawerAmount(hasLocationDrawerOverride(loc) ? formatMoneyInput(loc.cash_drawer_amount) : "");
     setEditLocDialog(true);
   };
 
   const handleEditLoc = async () => {
     if (!editLocName.trim() || !editingLoc) return;
-    await base44.entities.Location.update(editingLoc.id, { name: editLocName.trim(), address: editLocAddress.trim() });
+    await base44.entities.Location.update(editingLoc.id, {
+      name: editLocName.trim(),
+      address: editLocAddress.trim(),
+      cash_drawer_amount: normalizeOptionalMoney(editLocDrawerAmount),
+    });
     queryClient.invalidateQueries({ queryKey: ["locations"] });
     setEditLocDialog(false);
     toast.success("Location updated");
+  };
+
+  const saveCompanyDrawerAmount = async () => {
+    if (!company?.id) return;
+    setCompanyDrawerSaving(true);
+    await base44.entities.Company.update(company.id, {
+      cash_drawer_amount: normalizeMoney(companyDrawerAmount),
+    });
+    queryClient.invalidateQueries({ queryKey: ["company-info"] });
+    setCompanyDrawerSaving(false);
+    toast.success("Cash drawer default saved");
   };
 
   const openDeleteLoc = (loc) => {
@@ -251,12 +299,42 @@ export default function DashboardSettings() {
             <span>You've reached your <strong>{locationLimit}-location</strong> plan limit. Upgrade to add more locations.</span>
           </div>
         )}
-        <CardContent className="space-y-2">
+        <CardContent className="space-y-4">
+          <div className="rounded-lg border border-border p-3">
+            <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+              <div className="space-y-1">
+                <Label>Company Default Cash Drawer ($)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={companyDrawerAmount}
+                  onChange={(e) => setCompanyDrawerAmount(e.target.value)}
+                  onKeyDown={preventNegativeAmountKey}
+                  className="h-11"
+                />
+              </div>
+              <Button
+                onClick={saveCompanyDrawerAmount}
+                disabled={!company || companyDrawerSaving}
+                className="w-full sm:w-auto"
+              >
+                {companyDrawerSaving ? "Saving..." : "Save Default"}
+              </Button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
           {locations.map((loc) => (
-            <div key={loc.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
+            <div key={loc.id} className="flex flex-col gap-3 p-3 rounded-lg bg-muted/30 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="font-medium text-sm">{loc.name}</p>
                 {loc.address && <p className="text-xs text-muted-foreground">{loc.address}</p>}
+                <p className="text-xs text-muted-foreground mt-1">
+                  Drawer: ${drawerForLocation(loc).toFixed(2)}
+                  {!hasLocationDrawerOverride(loc) && " default"}
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 <Switch checked={loc.is_active} onCheckedChange={() => toggleLocation(loc)} />
@@ -269,6 +347,7 @@ export default function DashboardSettings() {
               </div>
             </div>
           ))}
+          </div>
         </CardContent>
       </Card>
 
@@ -279,6 +358,19 @@ export default function DashboardSettings() {
           <div className="space-y-4">
             <div><Label>Name</Label><Input value={locName} onChange={(e) => setLocName(e.target.value)} placeholder="e.g. Midtown" /></div>
             <div><Label>Address</Label><Input value={locAddress} onChange={(e) => setLocAddress(e.target.value)} placeholder="Full address" /></div>
+            <div>
+              <Label>Cash Drawer Amount ($)</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                value={locDrawerAmount}
+                onChange={(e) => setLocDrawerAmount(e.target.value)}
+                onKeyDown={preventNegativeAmountKey}
+                placeholder={companyDrawerAmount || "200.00"}
+              />
+            </div>
           </div>
           <DialogFooter><Button onClick={addLocation} disabled={!locName.trim()}>Add Location</Button></DialogFooter>
         </DialogContent>
@@ -291,6 +383,19 @@ export default function DashboardSettings() {
           <div className="space-y-3">
             <div><Label>Name</Label><Input value={editLocName} onChange={(e) => setEditLocName(e.target.value)} /></div>
             <div><Label>Address</Label><Input value={editLocAddress} onChange={(e) => setEditLocAddress(e.target.value)} placeholder="Full address" /></div>
+            <div>
+              <Label>Cash Drawer Amount ($)</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                value={editLocDrawerAmount}
+                onChange={(e) => setEditLocDrawerAmount(e.target.value)}
+                onKeyDown={preventNegativeAmountKey}
+                placeholder={companyDrawerAmount || "200.00"}
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditLocDialog(false)}>Cancel</Button>

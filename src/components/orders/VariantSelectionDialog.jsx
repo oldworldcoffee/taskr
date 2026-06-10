@@ -4,13 +4,21 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Plus, Package } from 'lucide-react';
 
+const asArray = (value) => Array.isArray(value) ? value : [];
+const asNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+};
+const money = (value) => asNumber(value).toFixed(2);
+
 export default function VariantSelectionDialog({ open, onOpenChange, group, items, onConfirm }) {
   const [quantities, setQuantities] = useState({});
 
   if (!group) return null;
+  const variantRows = asArray(items);
 
   const handleConfirm = () => {
-    const selectedVariants = items
+    const selectedVariants = variantRows
       .filter(item => quantities[item.id] > 0)
       .map(item => ({
         item_id: item.id,
@@ -42,14 +50,14 @@ export default function VariantSelectionDialog({ open, onOpenChange, group, item
           <p className="text-sm text-muted-foreground">Choose which variants to add to your order:</p>
           
           <div className="space-y-2 max-h-80 overflow-y-auto">
-            {items.map((item, idx) => (
+            {variantRows.map((item) => (
               <div key={item.id} className="flex items-center justify-between gap-3 p-3 border border-border rounded-lg hover:bg-muted/30 transition-colors">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <Package className="w-3.5 h-3.5 text-muted-foreground" />
                     <p className="text-sm font-medium truncate">{item.name}</p>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-0.5">{item.unit_of_measure} • ${(item.unit_cost || 0).toFixed(2)}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{item.unit_of_measure} • ${money(item.unit_cost)}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <Input

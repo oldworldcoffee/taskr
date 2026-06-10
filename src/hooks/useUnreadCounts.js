@@ -5,8 +5,17 @@ import { useQuery } from "@tanstack/react-query";
 
 const LS_KEY_CHAT = "last_seen_chat_v2"; // per-channel map: { channelId: isoString }
 const LS_KEY_FORUM = "last_seen_forum";
+const ALL_CHAT_CHANNELS = "__all__";
+const SEEN_STATE_CHANGED_EVENT = "taskr-unread-seen-state-changed";
+
+function safeDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
 
 function getLastSeenMap() {
+  if (typeof localStorage === "undefined") return {};
   try {
     const v = localStorage.getItem(LS_KEY_CHAT);
     return v ? JSON.parse(v) : {};
@@ -15,10 +24,62 @@ function getLastSeenMap() {
   }
 }
 
+function persistLastSeenMap(map) {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(LS_KEY_CHAT, JSON.stringify(map));
+}
+
+function notifySeenStateChanged() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(SEEN_STATE_CHANGED_EVENT));
+}
+
+function getLastSeenFromMap(map, channelId) {
+  const channelSeen = safeDate(map[channelId]);
+  const allSeen = safeDate(map[ALL_CHAT_CHANNELS]);
+  if (!channelSeen) return allSeen || new Date(0);
+  if (!allSeen) return channelSeen;
+  return channelSeen > allSeen ? channelSeen : allSeen;
+}
+
+function toSeenISOString(seenAt = new Date()) {
+  const seenDate = safeDate(seenAt) || new Date();
+  return seenDate.toISOString();
+}
+
+export function getForumLastSeen() {
+  if (typeof localStorage === "undefined") return new Date(0);
+  return safeDate(localStorage.getItem(LS_KEY_FORUM)) || new Date(0);
+}
+
+export function markForumSeenAt(seenAt = new Date()) {
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem(LS_KEY_FORUM, toSeenISOString(seenAt));
+  }
+  notifySeenStateChanged();
+}
+
 export function useUnreadCounts() {
   const { user } = useAuth();
   const [unreadChat, setUnreadChat] = useState(0);
   const [unreadForum, setUnreadForum] = useState(0);
+  const [seenStateVersion, setSeenStateVersion] = useState(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleSeenStateChanged = () => setSeenStateVersion((version) => version + 1);
+    const handleStorage = (event) => {
+      if (event.key === LS_KEY_CHAT || event.key === LS_KEY_FORUM) {
+        handleSeenStateChanged();
+      }
+    };
+    window.addEventListener(SEEN_STATE_CHANGED_EVENT, handleSeenStateChanged);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener(SEEN_STATE_CHANGED_EVENT, handleSeenStateChanged);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
 
   const { data: recentMessages = [] } = useQuery({
     queryKey: ["unread-chat-messages", user?.company_id],
@@ -76,7 +137,7 @@ export function useUnreadCounts() {
       if (m.dm_channel_id) {
         // Only count DMs the user is part of
         if (!m.dm_participants?.includes(user.email)) return false;
-        const lastSeen = lastSeenMap[m.dm_channel_id] ? new Date(lastSeenMap[m.dm_channel_id]) : new Date(0);
+        const lastSeen = getLastSeenFromMap(lastSeenMap, m.dm_channel_id);
         return new Date(m.created_date) > lastSeen;
       }
 
@@ -95,38 +156,37 @@ export function useUnreadCounts() {
         }
       }
 
-      const lastSeen = lastSeenMap[channelId] ? new Date(lastSeenMap[channelId]) : new Date(0);
+      const lastSeen = getLastSeenFromMap(lastSeenMap, channelId);
       return new Date(m.created_date) > lastSeen;
     }).length;
 
     setUnreadChat(Math.min(count, 99));
-  }, [recentMessages, chatChannels, user?.email, user?.assigned_locations, user?.role]);
+  }, [recentMessages, chatChannels, user?.email, user?.assigned_locations, user?.role, seenStateVersion]);
 
   useEffect(() => {
     if (!user?.email) return;
-    const lastSeen = localStorage.getItem(LS_KEY_FORUM);
-    const lastSeenDate = lastSeen ? new Date(lastSeen) : new Date(0);
+    const lastSeenDate = getForumLastSeen();
     const count = recentPosts.filter(p =>
       p.author_email !== user.email &&
       new Date(p.created_date) > lastSeenDate
     ).length;
     setUnreadForum(Math.min(count, 99));
-  }, [recentPosts, user?.email]);
+  }, [recentPosts, user?.email, seenStateVersion]);
 
-  const markChatSeen = (channelId) => {
+  const markChatSeen = (channelId, seenAt) => {
     const map = getLastSeenMap();
     if (channelId) {
-      map[channelId] = new Date().toISOString();
+      map[channelId] = toSeenISOString(seenAt);
     } else {
-      // Mark all seen (fallback)
-      map["__all__"] = new Date().toISOString();
+      map[ALL_CHAT_CHANNELS] = toSeenISOString(seenAt);
     }
-    localStorage.setItem(LS_KEY_CHAT, JSON.stringify(map));
-    setUnreadChat(0);
+    persistLastSeenMap(map);
+    notifySeenStateChanged();
+    if (!channelId) setUnreadChat(0);
   };
 
   const markForumSeen = () => {
-    localStorage.setItem(LS_KEY_FORUM, new Date().toISOString());
+    markForumSeenAt();
     setUnreadForum(0);
   };
 
@@ -138,11 +198,13 @@ export const LS_KEY_CHAT_MAP = LS_KEY_CHAT;
 
 export function getChannelLastSeen(channelId) {
   const map = getLastSeenMap();
-  return map[channelId] ? new Date(map[channelId]) : new Date(0);
+  return getLastSeenFromMap(map, channelId);
 }
 
-export function markChannelSeen(channelId) {
+export function markChannelSeen(channelId, seenAt) {
+  if (!channelId) return;
   const map = getLastSeenMap();
-  map[channelId] = new Date().toISOString();
-  localStorage.setItem(LS_KEY_CHAT_MAP, JSON.stringify(map));
+  map[channelId] = toSeenISOString(seenAt);
+  persistLastSeenMap(map);
+  notifySeenStateChanged();
 }

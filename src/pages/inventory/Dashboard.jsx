@@ -20,28 +20,35 @@ export default function Dashboard() {
   const [transfers, setTransfers] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   useEffect(() => {
+    setLoading(true);
+    setLoadError('');
     Promise.all([
-      base44.entities.Location.list(),
-      base44.entities.InventoryLocationSetting.list(),
-      base44.entities.InventoryItem.list(),
-      base44.entities.LocationInventory.list(),
-      base44.entities.Order.list('-created_date', 10),
-      base44.entities.Transfer.list('-created_date', 10),
-      base44.entities.Invoice.filter({ status: 'pending_review' }),
+      base44.entities.Location.list().catch(() => []),
+      base44.entities.InventoryLocationSetting.list().catch(() => []),
+      base44.entities.InventoryItem.list().catch(() => []),
+      base44.entities.LocationInventory.list().catch(() => []),
+      base44.entities.Order.list('-created_date', 10).catch(() => []),
+      base44.entities.Transfer.list('-created_date', 10).catch(() => []),
+      base44.entities.Invoice.filter({ status: 'pending_review' }).catch(() => []),
     ]).then(([locs, settings, itms, linv, ords, trans, invs]) => {
-      const enrichedLocs = enrichLocationsWithInventorySettings(locs, settings);
+      const enrichedLocs = enrichLocationsWithInventorySettings(Array.isArray(locs) ? locs : [], Array.isArray(settings) ? settings : []);
       const filteredLocs = enrichedLocs.filter(l => canAccessLocation(l.id));
       setLocations(filteredLocs);
-      setItems(itms);
-      setLocInv(linv.filter(li => canAccessLocation(li.location_id)));
-      setOrders(ords);
-      setTransfers(trans);
-      setInvoices(invs);
+      setItems(Array.isArray(itms) ? itms : []);
+      setLocInv((Array.isArray(linv) ? linv : []).filter(li => canAccessLocation(li.location_id)));
+      setOrders(Array.isArray(ords) ? ords : []);
+      setTransfers(Array.isArray(trans) ? trans : []);
+      setInvoices(Array.isArray(invs) ? invs : []);
+      setLoading(false);
+    }).catch((error) => {
+      console.error('Failed to load inventory overview:', error);
+      setLoadError(error.message || 'Unable to load inventory overview.');
       setLoading(false);
     });
-  }, []);
+  }, [canAccessLocation]);
 
   const totalValue = locInv.reduce((sum, li) => {
     const item = items.find(i => i.id === li.item_id);
@@ -76,6 +83,12 @@ export default function Dashboard() {
   return (
     <div className={isMobile ? "p-4 max-w-full" : "p-6 max-w-7xl mx-auto"}>
       <PageHeader title="Dashboard" subtitle="Overview across all locations" />
+
+      {loadError && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
+          {loadError}
+        </div>
+      )}
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
@@ -116,7 +129,7 @@ export default function Dashboard() {
               {orders.slice(0, 6).map(order => (
                 <div key={order.id} className="flex items-center justify-between py-2 border-b border-border last:border-0">
                   <div>
-                    <p className="text-sm font-medium">{order.order_number || `Order #${order.id.slice(-6)}`}</p>
+                    <p className="text-sm font-medium">{order.order_number || `Order #${String(order.id || '').slice(-6) || '—'}`}</p>
                     <p className="text-xs text-muted-foreground capitalize">{order.type} order</p>
                   </div>
                   <div className="text-right">

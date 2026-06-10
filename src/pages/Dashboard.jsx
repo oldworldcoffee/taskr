@@ -3,10 +3,9 @@ import { base44 } from "@/api/base44Client";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/lib/AuthContext";
 import { format, eachDayOfInterval, parseISO, startOfWeek, endOfWeek } from "date-fns";
-import { CheckCircle2, Clock, Circle, AlertTriangle, UserCircle, DollarSign } from "lucide-react";
+import { CheckCircle2, Clock, Circle, AlertTriangle } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -113,18 +112,6 @@ export default function Dashboard() {
         <div>
           <h1 className="text-2xl font-bold">Checklist Overview</h1>
           <p className="text-sm text-muted-foreground mt-1">Monitor checklist compliance across all locations</p>
-        </div>
-        <div className="flex gap-2">
-          <Link to="/dashboard/deposits">
-            <Button variant="outline" size="sm" className="gap-1.5 flex-shrink-0">
-              <DollarSign className="h-4 w-4" /> Deposit Reports
-            </Button>
-          </Link>
-          <Link to="/home">
-            <Button variant="outline" size="sm" className="gap-1.5 flex-shrink-0">
-              <UserCircle className="h-4 w-4" /> Employee View
-            </Button>
-          </Link>
         </div>
       </div>
 

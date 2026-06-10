@@ -13,6 +13,7 @@ const ENTITY_TABLES = {
   ForumComment: 'forum_comments',
   ForumPost: 'forum_posts',
   CommissaryFulfillment: 'inventory_commissary_fulfillments',
+  InventoryCategory: 'inventory_categories',
   InventoryCount: 'inventory_counts',
   InventoryItem: 'inventory_items',
   InventoryLocationSetting: 'inventory_location_settings',
@@ -24,9 +25,16 @@ const ENTITY_TABLES = {
   KBFolder: 'kb_folders',
   Location: 'locations',
   LocationInventory: 'inventory_location_stock',
+  RecipeChoiceGroup: 'inventory_recipe_choice_groups',
+  RecipeModifier: 'inventory_recipe_modifiers',
+  RecipeSizeSet: 'inventory_recipe_size_sets',
+  MenuRecipe: 'inventory_menu_recipes',
   Order: 'inventory_orders',
   PendingInvite: 'pending_invites',
+  PrepRecipe: 'inventory_prep_recipes',
   ProductGroup: 'inventory_product_groups',
+  RecipeMarginSetting: 'inventory_recipe_margin_settings',
+  RecipePackage: 'inventory_packages',
   ServiceRecord: 'service_records',
   ServiceSchedule: 'service_schedules',
   StorageArea: 'inventory_storage_areas',
@@ -41,6 +49,7 @@ const ENTITY_TABLES = {
 
 const COMPANY_SCOPED_ENTITIES = new Set([
   'CommissaryFulfillment',
+  'InventoryCategory',
   'InventoryCount',
   'InventoryItem',
   'InventoryLocationSetting',
@@ -49,8 +58,15 @@ const COMPANY_SCOPED_ENTITIES = new Set([
   'ItemStorageArea',
   'ItemVariant',
   'LocationInventory',
+  'RecipeChoiceGroup',
+  'RecipeModifier',
+  'RecipeSizeSet',
+  'MenuRecipe',
   'Order',
+  'PrepRecipe',
   'ProductGroup',
+  'RecipeMarginSetting',
+  'RecipePackage',
   'StorageArea',
   'Transfer',
   'Vendor',
@@ -447,8 +463,9 @@ export const base44 = {
   },
 
   users: {
-    inviteUser(email, role = 'user') {
-      return invokeFunction('inviteUser', { email, role });
+    inviteUser(invite, role = 'employee') {
+      const payload = typeof invite === 'string' ? { email: invite, role } : invite;
+      return invokeFunction('inviteUser', payload);
     },
   },
 
@@ -471,14 +488,9 @@ export const base44 = {
         return { file_url: data.publicUrl };
       },
 
-      async InvokeLLM() {
-        return {
-          vendor_name: '',
-          invoice_number: '',
-          invoice_date: '',
-          total_amount: 0,
-          items: [],
-        };
+      async InvokeLLM(payload = {}) {
+        const { data } = await invokeFunction('extractInvoiceImage', payload);
+        return data;
       },
     },
   },
