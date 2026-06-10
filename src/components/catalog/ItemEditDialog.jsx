@@ -14,7 +14,7 @@ import OptionExpandedFields from './OptionExpandedFields';
 const UOM_OPTIONS = ['EA', 'fl-oz', 'oz', 'ml', 'L', 'Qt', 'gal', 'g', 'gr', 'kg', 'lb'];
 const EMPTY_OPTION = { vendor_id: '', vendor_name: '', product_name: '', product_code: '', unit_cost: '', unit_of_measure: '', inner_pack_uom: '', inner_pack_units: '', inner_pack_name: '', packs_per_case: '', is_preferred: false, notes: '', location_ids: null };
 
-export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave, saving, vendors, locations = [], categories }) {
+export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave, saving, vendors, locations = [], categories, draftKey }) {
   const isMobile = useIsMobile();
   const [form, setForm] = useState(initialForm || {});
   const [expandedOption, setExpandedOption] = useState(null);
@@ -23,26 +23,108 @@ export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave
   const [loadingVariants, setLoadingVariants] = useState(false);
 
   const initialFormRef = useRef(initialForm);
+  const restoredDraftToastRef = useRef(false);
   useEffect(() => { initialFormRef.current = initialForm; });
 
+  const readDraft = () => {
+    if (!draftKey) return null;
+    try {
+      const rawDraft = window.localStorage.getItem(draftKey);
+      if (!rawDraft) return null;
+
+      const draft = JSON.parse(rawDraft);
+      const isExpired = Date.now() - Number(draft.updatedAt || 0) > 1000 * 60 * 60 * 24 * 7;
+      if (isExpired) {
+        window.localStorage.removeItem(draftKey);
+        return null;
+      }
+
+      const initialId = initialFormRef.current?.id || null;
+      if ((draft.itemId || null) !== initialId) return null;
+      return draft;
+    } catch {
+      window.localStorage.removeItem(draftKey);
+      return null;
+    }
+  };
+
+  const clearDraft = () => {
+    if (!draftKey) return;
+    window.localStorage.removeItem(draftKey);
+  };
+
+  const hasDraftContent = () => {
+    if (!open) return false;
+    return Boolean(
+      form.name ||
+      form.sku ||
+      form.category ||
+      form.unit_of_measure ||
+      form.description ||
+      form.unit_cost ||
+      form.commissary_price ||
+      (form.purchase_options || []).length ||
+      variants.length
+    );
+  };
+
   useEffect(() => {
+    const draft = readDraft();
     if (open && initialForm?.id) {
+      if (draft?.variants) {
+        setVariants(draft.variants);
+        return;
+      }
+
       setLoadingVariants(true);
       base44.entities.ItemVariant.filter({ item_id: initialForm.id }).then((loaded) => {
         setVariants(loaded.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)));
       }).finally(() => setLoadingVariants(false));
     } else if (open) {
-      setVariants([]);
+      setVariants(draft?.variants || []);
     }
   }, [open, initialForm?.id]);
 
   useEffect(() => {
     if (open) {
+      const draft = readDraft();
       const f = initialFormRef.current;
-      setForm(f ? { ...f, purchase_options: (f.purchase_options || []).map(o => ({ ...o })) } : {});
+      const draftForm = draft?.form;
+      const source = draftForm || f;
+      setForm(source ? { ...source, purchase_options: (source.purchase_options || []).map(o => ({ ...o })) } : {});
       setExpandedOption(null);
+      if (draftForm && !restoredDraftToastRef.current) {
+        restoredDraftToastRef.current = true;
+        toast.info('Restored your unsaved item draft.');
+      }
+    } else {
+      restoredDraftToastRef.current = false;
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !draftKey || !hasDraftContent()) return;
+
+    const draft = {
+      itemId: form.id || null,
+      form,
+      variants,
+      updatedAt: Date.now(),
+    };
+    window.localStorage.setItem(draftKey, JSON.stringify(draft));
+  }, [open, draftKey, form, variants]);
+
+  useEffect(() => {
+    if (!open || !hasDraftContent()) return;
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [open, form, variants]);
 
   const scrapeProductImage = async (idx) => {
     const opt = (form.purchase_options || [])[idx];
@@ -145,11 +227,17 @@ export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave
       ...form,
       purchase_options: (form.purchase_options || []).map(o => ({ ...o, unit_of_measure: o.unit_of_measure || form.unit_of_measure || '' })),
     };
-    await onSave(filledForm, variants);
+    const didSave = await onSave(filledForm, variants);
+    if (didSave) clearDraft();
+  };
+
+  const handleOpenChange = (nextOpen) => {
+    if (!nextOpen) clearDraft();
+    onOpenChange(nextOpen);
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className={isMobile
         ? "max-w-full w-full h-[100dvh] max-h-[100dvh] rounded-none overflow-y-auto flex flex-col p-0"
         : "max-w-2xl max-h-[90vh] overflow-y-auto"
@@ -439,7 +527,7 @@ export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave
           )}
 
           <DialogFooter className="mt-4">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => handleOpenChange(false)}>Cancel</Button>
             <Button onClick={handleSave} disabled={saving || !form.name || !form.unit_of_measure}>
               {saving ? 'Saving...' : 'Save Item'}
             </Button>

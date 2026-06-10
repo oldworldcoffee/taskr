@@ -1,4 +1,4 @@
-import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
+import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { supabase } from '@/api/supabaseClient';
 import { enrichLocationsWithInventorySettings, isCommissaryLocation } from '@/lib/inventoryLocations';
@@ -25,9 +25,19 @@ export const AuthProvider = ({ children }) => {
   const [authChecked, setAuthChecked] = useState(false);
   const [appPublicSettings] = useState({ public_settings: {} });
   const [allLocations, setAllLocations] = useState([]);
+  const authCheckedRef = useRef(false);
+  const isAuthenticatedRef = useRef(false);
 
-  const checkUserAuth = useCallback(async () => {
-    setIsLoadingAuth(true);
+  useEffect(() => {
+    authCheckedRef.current = authChecked;
+  }, [authChecked]);
+
+  useEffect(() => {
+    isAuthenticatedRef.current = isAuthenticated;
+  }, [isAuthenticated]);
+
+  const checkUserAuth = useCallback(async ({ showLoading = true } = {}) => {
+    if (showLoading) setIsLoadingAuth(true);
     setAuthError(null);
 
     try {
@@ -86,14 +96,14 @@ export const AuthProvider = ({ children }) => {
         setIsAuthenticated(false);
       }
     } finally {
-      setIsLoadingAuth(false);
+      if (showLoading) setIsLoadingAuth(false);
       setAuthChecked(true);
     }
   }, []);
 
   const checkAppState = useCallback(async () => {
     setIsLoadingPublicSettings(false);
-    await checkUserAuth();
+    await checkUserAuth({ showLoading: true });
   }, [checkUserAuth]);
 
   useEffect(() => {
@@ -101,8 +111,26 @@ export const AuthProvider = ({ children }) => {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(() => {
-      checkUserAuth();
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setAllLocations([]);
+        setIsAuthenticated(false);
+        setAuthError(null);
+        setIsLoadingAuth(false);
+        setAuthChecked(true);
+        return;
+      }
+
+      if (event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') {
+        return;
+      }
+
+      if (event === 'SIGNED_IN' && authCheckedRef.current && isAuthenticatedRef.current) {
+        return;
+      }
+
+      checkUserAuth({ showLoading: !authCheckedRef.current });
     });
 
     return () => subscription.unsubscribe();
