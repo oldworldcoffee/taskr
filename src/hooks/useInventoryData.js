@@ -46,6 +46,7 @@ export const inventoryKeys = {
   pendingInvoices: ['inventory', 'invoices', 'pending'],
   snapshotsByDate: (date) => ['inventory', 'snapshots', date],
   catalog: (companyId) => ['inventory', 'catalog', companyId || 'none'],
+  prepaidPools: ['inventory', 'prepaid-pools', 'active'],
 };
 
 export function useLocations() {
@@ -108,6 +109,14 @@ export function usePendingInvoices() {
         'id',
         'status',
       ]),
+    staleTime: MINUTE,
+  });
+}
+
+export function usePrepaidPools() {
+  return useQuery({
+    queryKey: inventoryKeys.prepaidPools,
+    queryFn: () => base44.entities.PrepaidPool.filter({ status: 'active' }),
     staleTime: MINUTE,
   });
 }

@@ -23,7 +23,8 @@ export default function GroupedCatalogRow({
   getPreferredOption,
   getCheapestOption,
   getPricePerUOM,
-  groupNames
+  groupNames,
+  poolInfoByItemId = {}
 }) {
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState('');
@@ -122,7 +123,14 @@ export default function GroupedCatalogRow({
                 );
               })()}
               <div>
-                <div>{firstItem.name}</div>
+                <div>
+                  {firstItem.name}
+                  {poolInfoByItemId[firstItem.id] && (
+                    <span className="ml-2 inline-flex items-center rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700 align-middle">
+                      Pool · {Number(poolInfoByItemId[firstItem.id].remaining || 0).toLocaleString()} left
+                    </span>
+                  )}
+                </div>
                 {firstItem.purchase_options?.find(o => o.product_image_url) && (
                   <div className="text-xs text-muted-foreground">
                     <a href={firstItem.purchase_options.find(o => o.product_image_url).product_url} target="_blank" rel="noopener noreferrer" className="hover:text-primary">
@@ -289,7 +297,14 @@ export default function GroupedCatalogRow({
                             {selected.has(item.id) ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
                           </button>
                           <div>
-                            <div className="font-medium">{item.name}</div>
+                            <div className="font-medium">
+                              {item.name}
+                              {poolInfoByItemId[item.id] && (
+                                <span className="ml-2 inline-flex items-center rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700 align-middle">
+                                  Pool · {Number(poolInfoByItemId[item.id].remaining || 0).toLocaleString()} left
+                                </span>
+                              )}
+                            </div>
                             {item.description && (
                               <div className="text-xs text-muted-foreground truncate max-w-xs">{item.description}</div>
                             )}
