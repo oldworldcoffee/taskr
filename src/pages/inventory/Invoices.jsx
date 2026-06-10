@@ -1,16 +1,17 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { Camera, Upload, CheckCircle, XCircle, Eye, AlertTriangle, Plus, Trash2, Loader2, Check, ChevronsUpDown, RefreshCw } from 'lucide-react';
+import { Camera, Upload, CheckCircle, XCircle, Eye, AlertTriangle, Plus, Trash2, Loader2, Layers, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import PageHeader from '@/components/layout/PageHeader';
 import StatusBadge from '@/components/ui/StatusBadge';
+import InventoryItemSearch from '@/components/inventory/InventoryItemSearch';
+import CreatePoolDialog from '@/components/inventory/CreatePoolDialog';
+import { activePoolsForItem, allocateDrawdowns, lineBaseQuantity } from '@/lib/prepaidPools';
 import { mergeInventoryCategories } from '@/lib/inventoryCategories';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
@@ -244,6 +245,7 @@ function purchaseOptionMatchesLine(option = {}, row = {}) {
 
 function shouldSuggestPurchaseOption(row, item) {
   if (!row?.item_id || !item) return false;
+  if (row.is_pool_draw) return false;
   if (row.purchase_option_added) return false;
   if ((item.purchase_options || []).some((option) => purchaseOptionMatchesLine(option, row))) return false;
   return Boolean(firstLineCode(row) || row.item_name);
@@ -359,165 +361,6 @@ function buildPurchaseOptionFromLine(row = {}, item = {}, invoice = {}, vendors 
   };
 }
 
-function inventoryItemLabel(item) {
-  if (!item) return '';
-  return `${item.name}${item.unit_of_measure ? ` (${item.unit_of_measure})` : ''}`;
-}
-
-function normalizeInventorySearch(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/fluid\s+ounces?/g, 'oz')
-    .replace(/fl[.\s-]*oz/g, 'oz')
-    .replace(/ounces?/g, 'oz')
-    .replace(/\bchoc\b/g, 'chocolate')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function searchParts(value) {
-  const normalized = normalizeInventorySearch(value);
-  return {
-    normalized,
-    compact: normalized.replace(/\s+/g, ''),
-    words: normalized.split(' ').filter(Boolean),
-  };
-}
-
-function tokenMatches(parts, token) {
-  if (!token) return true;
-  if (/\d/.test(token)) return parts.compact.includes(token) || parts.normalized.includes(token);
-  if (token.length <= 3) return parts.words.some((word) => word === token || word.startsWith(token));
-  return parts.normalized.includes(token) || parts.words.some((word) => word.startsWith(token));
-}
-
-function itemSearchText(item) {
-  const purchaseText = (item.purchase_options || [])
-    .map((option) => [
-      option.vendor_name,
-      option.product_name,
-      option.product_code,
-      option.vendor_sku,
-      option.vendor_item_number,
-      option.item_code,
-      option.supplier_item_number,
-      option.unit_of_measure,
-      option.inner_pack_name,
-      option.inner_pack_uom,
-    ].filter(Boolean).join(' '))
-    .join(' ');
-  return [item.name, item.sku, item.category, item.unit_of_measure, item.description, purchaseText].filter(Boolean).join(' ');
-}
-
-function rankInventoryItem(item, query) {
-  const queryParts = searchParts(query);
-  const tokens = queryParts.words.length ? queryParts.words : [queryParts.compact].filter(Boolean);
-  if (!tokens.length) return 0;
-
-  const fullParts = searchParts(itemSearchText(item));
-  if (!tokens.every((token) => tokenMatches(fullParts, token))) return null;
-
-  const nameParts = searchParts(item.name);
-  const categoryParts = searchParts(item.category);
-  const uomParts = searchParts(item.unit_of_measure);
-  const queryText = queryParts.normalized;
-  const queryCompact = queryParts.compact;
-
-  let score = 100;
-  if (nameParts.normalized === queryText) score = 0;
-  else if (nameParts.normalized.startsWith(queryText)) score = 5;
-  else if (nameParts.words.some((word) => word === queryText || word.startsWith(queryText))) score = 10;
-  else if (queryCompact && nameParts.compact.includes(queryCompact)) score = 15;
-  else if (nameParts.normalized.includes(queryText)) score = 20;
-  else if (tokens.every((token) => tokenMatches(nameParts, token))) score = 25;
-  else if (tokens.every((token) => tokenMatches(categoryParts, token))) score = 45;
-  else if (tokens.every((token) => tokenMatches(uomParts, token))) score = 60;
-
-  return score + Math.min(nameParts.normalized.length / 100, 2);
-}
-
-function rankedInventoryItems(items, query) {
-  const trimmedQuery = query.trim();
-  if (!trimmedQuery) {
-    return [...items].sort((a, b) => (a.name || '').localeCompare(b.name || '')).slice(0, 50);
-  }
-
-  return items
-    .map((item) => ({ item, rank: rankInventoryItem(item, trimmedQuery) }))
-    .filter((entry) => entry.rank !== null)
-    .sort((a, b) => a.rank - b.rank || (a.item.name || '').localeCompare(b.item.name || ''))
-    .map((entry) => entry.item)
-    .slice(0, 75);
-}
-
-function InvoiceItemSearch({ value, onChange, items, extractedName }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const selected = items.find((item) => item.id === value);
-  const visibleItems = useMemo(() => rankedInventoryItems(items, query), [items, query]);
-
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (!nextOpen) setQuery('');
-      }}
-    >
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          role="combobox"
-          aria-expanded={open}
-          className="h-8 w-full min-w-[220px] justify-between px-2 text-xs font-normal"
-        >
-          <span className={`truncate ${selected ? 'text-foreground' : 'text-muted-foreground'}`}>
-            {selected ? inventoryItemLabel(selected) : 'Search inventory item'}
-          </span>
-          <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[min(520px,calc(100vw-2rem))] p-0" align="start">
-        <Command shouldFilter={false}>
-          <CommandInput
-            value={query}
-            onValueChange={setQuery}
-            placeholder={extractedName ? `Search for ${extractedName}` : 'Search by item, size, category, SKU...'}
-          />
-          <CommandList>
-            <CommandGroup>
-              <CommandItem value="__no_match__" onSelect={() => { onChange(''); setOpen(false); setQuery(''); }}>
-                <Check className={`h-4 w-4 ${!value ? 'opacity-100' : 'opacity-0'}`} />
-                <span className="text-muted-foreground">No match</span>
-              </CommandItem>
-              {visibleItems.length === 0 ? (
-                <div className="px-3 py-6 text-center text-sm text-muted-foreground">No inventory item found.</div>
-              ) : visibleItems.map((item) => (
-                <CommandItem
-                  key={item.id}
-                  value={item.id}
-                  onSelect={() => {
-                    onChange(item.id);
-                    setOpen(false);
-                    setQuery('');
-                  }}
-                >
-                  <Check className={`h-4 w-4 ${value === item.id ? 'opacity-100' : 'opacity-0'}`} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate">{inventoryItemLabel(item)}</span>
-                    {item.category && <span className="block truncate text-xs text-muted-foreground">{item.category}</span>}
-                  </span>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
-  );
-}
 
 export default function Invoices() {
   const { canAccessLocation, companyId } = useAuth();
@@ -533,6 +376,8 @@ export default function Invoices() {
   const [quickAddRowIdx, setQuickAddRowIdx] = useState(null);
   const [quickAddForm, setQuickAddForm] = useState(EMPTY_QUICK_ADD);
   const [purchaseOptionDialog, setPurchaseOptionDialog] = useState(null);
+  const [pools, setPools] = useState([]);
+  const [poolDialog, setPoolDialog] = useState(null);
   const [selectedLoc, setSelectedLoc] = useState('');
   const [uploading, setUploading] = useState(false);
   const [extracting, setExtracting] = useState(false);
@@ -612,14 +457,19 @@ export default function Invoices() {
 
       const matchedOption = (item.purchase_options || []).find((option) => purchaseOptionMatchesLine(option, row));
       const purchaseOptionMatched = Boolean(matchedOption);
-      return {
+      const autoPoolDraw = !row.pool_purchase
+        && activePoolsForItem(pools, row.item_id).length > 0
+        && (parseFloat(row.unit_cost) || 0) === 0;
+      const nextRow = {
         ...row,
         matched: true,
-        purchase_option_matched: purchaseOptionMatched || row.purchase_option_added === true,
-        purchase_option_missing: shouldSuggestPurchaseOption(row, item),
+        is_pool_draw: row.pool_draw_user_set ? Boolean(row.is_pool_draw) : autoPoolDraw,
         purchase_option_vendor_id: matchedOption?.vendor_id || row.purchase_option_vendor_id || null,
         purchase_option_vendor_name: matchedOption?.vendor_name || row.purchase_option_vendor_name || '',
       };
+      nextRow.purchase_option_matched = purchaseOptionMatched || row.purchase_option_added === true;
+      nextRow.purchase_option_missing = shouldSuggestPurchaseOption(nextRow, item);
+      return nextRow;
     });
 
     return {
@@ -639,13 +489,15 @@ export default function Invoices() {
       base44.entities.Invoice.list('-created_date', 50),
       base44.entities.Vendor.list(),
       companyId ? base44.entities.InventoryCategory.filter({ company_id: companyId }).catch(() => []) : Promise.resolve([]),
-    ]).then(([locs, itms, linv, invs, vends, cats]) => {
+      base44.entities.PrepaidPool.filter({ status: 'active' }).catch(() => []),
+    ]).then(([locs, itms, linv, invs, vends, cats, poolRows]) => {
       setLocations(locs.filter(l => canAccessLocation(l.id)));
       setItems(itms);
       setLocInv(linv);
       setInvoices(invs);
       setVendors(vends);
       setInventoryCategories(cats);
+      setPools(poolRows);
       setLoading(false);
     }).catch((error) => {
       toast.error(error.message || 'Failed to load invoices');
@@ -810,6 +662,14 @@ export default function Invoices() {
       const its = [...prev.extracted_items];
       const numericFields = new Set(['quantity', 'unit_cost', 'total_cost']);
       its[idx] = { ...its[idx], [field]: numericFields.has(field) ? (parseFloat(val) || 0) : val };
+      if (field === 'item_id' || field === 'unit_cost') {
+        const row = its[idx];
+        if (!row.pool_draw_user_set && !row.pool_purchase) {
+          row.is_pool_draw = Boolean(row.item_id)
+            && activePoolsForItem(pools, row.item_id).length > 0
+            && (parseFloat(row.unit_cost) || 0) === 0;
+        }
+      }
       if (field === 'item_id') {
         const item = items.find(i => i.id === val);
         its[idx].matched = Boolean(item);
@@ -822,6 +682,8 @@ export default function Invoices() {
       }
       if (field === 'quantity' || field === 'unit_cost') {
         its[idx].total_cost = (its[idx].quantity || 0) * (its[idx].unit_cost || 0);
+        const item = items.find(i => i.id === its[idx].item_id);
+        if (item) its[idx].purchase_option_missing = shouldSuggestPurchaseOption(its[idx], item);
       }
       return { ...prev, extracted_items: its };
     });
@@ -918,6 +780,63 @@ export default function Invoices() {
     } catch (error) {
       toast.error(error.message || 'Failed to open invoice for manual review');
     }
+  };
+
+  const togglePoolDraw = (idx) => {
+    setReviewDialog(prev => {
+      if (!prev) return prev;
+      const its = [...(prev.extracted_items || [])];
+      if (!its[idx]) return prev;
+      its[idx] = { ...its[idx], is_pool_draw: !its[idx].is_pool_draw, pool_draw_user_set: true };
+      const item = items.find(i => i.id === its[idx].item_id);
+      if (item) its[idx].purchase_option_missing = shouldSuggestPurchaseOption(its[idx], item);
+      return { ...prev, extracted_items: its };
+    });
+  };
+
+  const openPoolDialogForLine = (idx) => {
+    const row = reviewDialog?.extracted_items?.[idx];
+    const item = items.find(i => i.id === row?.item_id);
+    if (!row || !item) {
+      toast.error('Match this line to an inventory item first.');
+      return;
+    }
+
+    const matchedOption = (item.purchase_options || []).find((option) => purchaseOptionMatchesLine(option, row));
+    const matchedVendor = findVendorByName(vendors, reviewDialog.vendor_name);
+    setPoolDialog({
+      rowIdx: idx,
+      initial: {
+        item_id: item.id,
+        vendor_id: matchedVendor?.id || '',
+        vendor_name: matchedVendor?.name || String(reviewDialog.vendor_name || '').trim(),
+        source_invoice_id: reviewDialog.id,
+        total_quantity: String(lineBaseQuantity(row, item, matchedOption) || ''),
+        total_cost: String(row.total_cost || ((row.quantity || 0) * (row.unit_cost || 0)) || ''),
+        purchased_date: dateInputValue(reviewDialog.invoice_date),
+      },
+    });
+  };
+
+  const handlePoolCreated = (pool, updatedItem) => {
+    if (updatedItem) {
+      setItems(prev => prev.map(existing => existing.id === updatedItem.id ? { ...existing, ...updatedItem } : existing));
+    }
+    setPools(prev => [...prev, pool]);
+    const rowIdx = poolDialog?.rowIdx;
+    setReviewDialog(prev => {
+      if (!prev || rowIdx == null) return prev;
+      const its = [...(prev.extracted_items || [])];
+      if (!its[rowIdx]) return prev;
+      its[rowIdx] = {
+        ...its[rowIdx],
+        pool_purchase: true,
+        pool_id: pool.id,
+        is_pool_draw: false,
+        purchase_option_missing: false,
+      };
+      return { ...prev, extracted_items: its };
+    });
   };
 
   const openPurchaseOptionDialog = (idx) => {
@@ -1138,13 +1057,47 @@ export default function Invoices() {
     try {
       const patch = invoicePatchFromReview('confirmed');
       await base44.entities.Invoice.update(reviewDialog.id, patch);
-      // Update stock levels for matched items
+      // Update stock levels for matched items (pool purchases stay at the vendor)
       for (const row of patch.extracted_items) {
-        if (!row.item_id) continue;
+        if (!row.item_id || row.pool_purchase) continue;
         const li = locInv.find(l => l.location_id === patch.location_id && l.item_id === row.item_id);
         const newQty = (li?.on_hand_quantity || 0) + (row.quantity || 0);
         if (li) await base44.entities.LocationInventory.update(li.id, { ...li, on_hand_quantity: newQty });
         else await base44.entities.LocationInventory.create({ location_id: patch.location_id, item_id: row.item_id, on_hand_quantity: newQty, par_level: 0, reorder_point: 0 });
+      }
+      // Record prepaid pool drawdowns for pool-draw lines at the locked pool cost
+      const poolDrawRows = patch.extracted_items.filter(row => row.item_id && row.is_pool_draw && !row.pool_purchase);
+      if (poolDrawRows.length) {
+        const freshPools = await base44.entities.PrepaidPool.filter({ status: 'active' });
+        const drawnDate = dateInputValue(patch.invoice_date) || format(new Date(), 'yyyy-MM-dd');
+        let overdrawn = false;
+        for (const row of poolDrawRows) {
+          const item = items.find(i => i.id === row.item_id);
+          const matchedOption = item ? (item.purchase_options || []).find((option) => purchaseOptionMatchesLine(option, row)) : null;
+          const baseQty = lineBaseQuantity(row, item || {}, matchedOption);
+          const itemPools = activePoolsForItem(freshPools, row.item_id);
+          if (!itemPools.length || baseQty <= 0) continue;
+          for (const allocation of allocateDrawdowns(itemPools, baseQty)) {
+            const available = Math.max(Number(allocation.pool.remaining_quantity || 0), 0);
+            if (allocation.quantity > available) overdrawn = true;
+            await base44.entities.PoolDrawdown.create({
+              pool_id: allocation.pool.id,
+              item_id: row.item_id,
+              location_id: patch.location_id,
+              invoice_id: reviewDialog.id,
+              quantity: allocation.quantity,
+              unit_cost: Number(allocation.pool.unit_cost || 0),
+              total_cost: allocation.quantity * Number(allocation.pool.unit_cost || 0),
+              drawn_date: drawnDate,
+              draw_type: 'invoice',
+            });
+            // keep local remaining in sync so later lines on this invoice allocate correctly
+            allocation.pool.remaining_quantity = Number(allocation.pool.remaining_quantity || 0) - allocation.quantity;
+          }
+        }
+        if (overdrawn) {
+          toast.warning('A prepaid pool was overdrawn by this invoice. Check the Pools page and record an adjustment if needed.');
+        }
       }
       // Update related commissary order status to 'received'
       if (reviewDialog.order_id) {
@@ -1189,6 +1142,9 @@ export default function Invoices() {
   const lineItemCount = reviewDialog?.extracted_items?.length || 0;
   const unmatchedLineCount = (reviewDialog?.extracted_items || []).filter(row => !row.item_id).length;
   const purchaseOptionSuggestionCount = (reviewDialog?.extracted_items || []).filter(row => row.item_id && row.purchase_option_missing).length;
+  const poolDrawCount = (reviewDialog?.extracted_items || []).filter(row => row.item_id && row.is_pool_draw && !row.pool_purchase).length;
+  const poolPurchaseCount = (reviewDialog?.extracted_items || []).filter(row => row.pool_purchase).length;
+  const allLinesArePoolPurchases = lineItemCount > 0 && poolPurchaseCount === lineItemCount;
   const activeCategories = mergeInventoryCategories(inventoryCategories, items)
     .filter(category => category.is_active !== false);
 
@@ -1408,6 +1364,18 @@ export default function Invoices() {
                   {purchaseOptionSuggestionCount} matched line{purchaseOptionSuggestionCount > 1 ? 's have' : ' has'} a new vendor product/SKU. Add the purchase option before confirming if you want future invoices to match automatically.
                 </div>
               )}
+              {poolDrawCount > 0 && (
+                <div className="bg-violet-50 border border-violet-200 rounded-lg p-3 text-sm text-violet-700 flex items-center gap-2">
+                  <Layers className="w-4 h-4 flex-shrink-0" />
+                  {poolDrawCount} line{poolDrawCount > 1 ? 's' : ''} will draw from prepaid pools at the locked cost. Stock is received as usual and no purchase option is created from these lines.
+                </div>
+              )}
+              {poolPurchaseCount > 0 && (
+                <div className="bg-slate-100 border border-slate-200 rounded-lg p-3 text-sm text-slate-700 flex items-center gap-2">
+                  <Layers className="w-4 h-4 flex-shrink-0" />
+                  {poolPurchaseCount} line{poolPurchaseCount > 1 ? 's are' : ' is'} a prepaid pool purchase. The vendor holds this stock — confirming records the bill without receiving stock.
+                </div>
+              )}
               <div className="space-y-3 rounded-lg border border-border p-3">
                 <div className="flex items-center justify-between gap-3">
                   <Label className="text-sm font-semibold">Invoice Details</Label>
@@ -1525,15 +1493,39 @@ export default function Invoices() {
                                   New purchase option
                                 </span>
                               )}
-                              {row.purchase_option_matched && !row.purchase_option_missing && (
+                              {row.purchase_option_matched && !row.purchase_option_missing && !row.is_pool_draw && !row.pool_purchase && (
                                 <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
                                   Purchase option matched
+                                </span>
+                              )}
+                              {row.item_id && row.is_pool_draw && !row.pool_purchase && (() => {
+                                const item = items.find(i => i.id === row.item_id);
+                                const itemPools = activePoolsForItem(pools, row.item_id);
+                                const remaining = itemPools.reduce((sum, pool) => sum + Number(pool.remaining_quantity || 0), 0);
+                                const matchedOption = item ? (item.purchase_options || []).find((option) => purchaseOptionMatchesLine(option, row)) : null;
+                                const baseQty = lineBaseQuantity(row, item || {}, matchedOption);
+                                const converted = baseQty !== Number(row.quantity || 0);
+                                const overdraw = baseQty > remaining;
+                                return (
+                                  <span className="inline-flex flex-wrap items-center gap-1">
+                                    <span className="inline-flex items-center rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+                                      Pool draw{converted ? ` — ${baseQty.toLocaleString()} ${item?.unit_of_measure || 'EA'}` : ''}
+                                    </span>
+                                    <span className={`text-[11px] ${overdraw ? 'text-red-600 font-medium' : 'text-muted-foreground'}`}>
+                                      {overdraw ? `exceeds ${remaining.toLocaleString()} remaining` : `${remaining.toLocaleString()} in pool`}
+                                    </span>
+                                  </span>
+                                );
+                              })()}
+                              {row.pool_purchase && (
+                                <span className="inline-flex items-center rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-700">
+                                  Pool purchase — no stock received
                                 </span>
                               )}
                             </div>
                           </td>
                           <td className="px-3 py-2">
-                            <InvoiceItemSearch
+                            <InventoryItemSearch
                               value={row.item_id || ''}
                               onChange={(itemId) => updateExtractedItem(idx, 'item_id', itemId)}
                               items={items}
@@ -1569,6 +1561,27 @@ export default function Invoices() {
                                   {savingPurchaseOptionIdx === idx ? 'Adding...' : 'Review Purchase Option'}
                                 </Button>
                               )}
+                              {row.item_id && !row.pool_purchase && activePoolsForItem(pools, row.item_id).length > 0 && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className={`h-7 text-xs ${row.is_pool_draw ? 'border-violet-300 text-violet-700' : ''}`}
+                                  onClick={() => togglePoolDraw(idx)}
+                                >
+                                  <Layers className="w-3.5 h-3.5 mr-1" />
+                                  {row.is_pool_draw ? 'Pool Draw: On' : 'Pool Draw: Off'}
+                                </Button>
+                              )}
+                              {row.item_id && !row.pool_purchase && !row.is_pool_draw && ((row.total_cost || 0) > 0 || (row.unit_cost || 0) > 0) && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 text-xs"
+                                  onClick={() => openPoolDialogForLine(idx)}
+                                >
+                                  <Layers className="w-3.5 h-3.5 mr-1" />Create Pool
+                                </Button>
+                              )}
                               <Button
                                 variant="ghost"
                                 size="icon"
@@ -1597,7 +1610,8 @@ export default function Invoices() {
               {savingReview ? 'Saving...' : 'Save Changes'}
             </Button>
             <Button onClick={confirmInvoice} disabled={confirming || savingReview || lineItemCount === 0 || unmatchedLineCount > 0}>
-              <CheckCircle className="w-4 h-4 mr-1" />{confirming ? 'Confirming...' : 'Confirm & Receive Stock'}
+              <CheckCircle className="w-4 h-4 mr-1" />
+              {confirming ? 'Confirming...' : allLinesArePoolPurchases ? 'Confirm — Vendor Holds Stock' : 'Confirm & Receive Stock'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1828,6 +1842,15 @@ export default function Invoices() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CreatePoolDialog
+        open={Boolean(poolDialog)}
+        onClose={() => setPoolDialog(null)}
+        items={items}
+        vendors={vendors}
+        initial={poolDialog?.initial}
+        onCreated={handlePoolCreated}
+      />
     </div>
   );
 }

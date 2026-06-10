@@ -136,6 +136,7 @@ export default function MasterCatalog() {
   const [vendors, setVendors] = useState([]);
   const [locations, setLocations] = useState([]);
   const [inventoryCategories, setInventoryCategories] = useState([]);
+  const [poolInfoByItemId, setPoolInfoByItemId] = useState({});
   const [search, setSearch] = useState('');
   const [dialog, setDialog] = useState(false);
   const [form, setForm] = useState(EMPTY);
@@ -174,14 +175,15 @@ export default function MasterCatalog() {
   const catalogQuery = useQuery({
     queryKey: inventoryKeys.catalog(companyId),
     queryFn: async () => {
-      const [itms, vends, locs, groups, cats] = await Promise.all([
+      const [itms, vends, locs, groups, cats, pools] = await Promise.all([
         base44.entities.InventoryItem.list(),
         base44.entities.Vendor.list(),
         base44.entities.Location.list(),
         base44.entities.ProductGroup.list(),
         companyId ? base44.entities.InventoryCategory.filter({ company_id: companyId }).catch(() => []) : Promise.resolve([]),
+        base44.entities.PrepaidPool.filter({ status: 'active' }).catch(() => []),
       ]);
-      return { itms, vends, locs, groups, cats };
+      return { itms, vends, locs, groups, cats, pools };
     },
     staleTime: 60 * 1000,
   });
@@ -193,6 +195,14 @@ export default function MasterCatalog() {
     setVendors(data.vends);
     setLocations(data.locs);
     setInventoryCategories(data.cats);
+
+    const poolMap = {};
+    for (const pool of data.pools || []) {
+      const entry = poolMap[pool.item_id] || { remaining: 0, unit_of_measure: pool.unit_of_measure };
+      entry.remaining += Number(pool.remaining_quantity || 0);
+      poolMap[pool.item_id] = entry;
+    }
+    setPoolInfoByItemId(poolMap);
 
     // Create group name lookup map
     const groupMap = {};
@@ -859,7 +869,14 @@ export default function MasterCatalog() {
                               {isSelected ? <CheckSquare className="w-4 h-4 text-primary" /> : <Square className="w-4 h-4 text-muted-foreground" />}
                             </button>
                             <div className="flex-1">
-                              <p className="font-semibold text-sm">{item.name}</p>
+                              <p className="font-semibold text-sm">
+                                {item.name}
+                                {poolInfoByItemId[item.id] && (
+                                  <span className="ml-2 inline-flex items-center rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700 align-middle">
+                                    Pool · {Number(poolInfoByItemId[item.id].remaining || 0).toLocaleString()} left
+                                  </span>
+                                )}
+                              </p>
                               <p className="text-xs text-muted-foreground">{categoryGroupLabel(itemMainCategory(item))} / {item.category || '—'} · {item.unit_of_measure}</p>
                               {groupVendors.length > 0 && <p className="text-xs text-muted-foreground mt-0.5">{groupVendors.join(', ')}</p>}
                             </div>
@@ -938,6 +955,7 @@ export default function MasterCatalog() {
                       getCheapestOption={getCheapestOption}
                       getPricePerUOM={getPricePerUOM}
                       groupNames={groupNames}
+                      poolInfoByItemId={poolInfoByItemId}
                     />
                   );
                 })}

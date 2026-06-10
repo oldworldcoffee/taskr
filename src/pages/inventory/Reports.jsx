@@ -4,13 +4,15 @@ import {
   useInventoryLocationSettings,
   useInventorySnapshots,
   useLocations,
+  usePrepaidPools,
   useRecentOrders,
   useStockLevels,
   useValueItems,
 } from '@/hooks/useInventoryData';
+import { poolRemainingValue } from '@/lib/prepaidPools';
 import { getInventoryItemValue, getInventorySnapshotValue } from '@/lib/inventoryValue';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { DollarSign, Package, TrendingDown, TrendingUp, Calendar, MapPin } from 'lucide-react';
+import { DollarSign, Layers, Package, TrendingDown, TrendingUp, Calendar, MapPin } from 'lucide-react';
 import PageHeader from '@/components/layout/PageHeader';
 import StatCard from '@/components/ui/StatCard';
 
@@ -29,6 +31,7 @@ export default function Reports() {
   const stockQuery = useStockLevels();
   const ordersQuery = useRecentOrders(100);
   const snapshotsQuery = useInventorySnapshots(snapshotDate);
+  const prepaidPoolsQuery = usePrepaidPools();
 
   const loading =
     locationsQuery.isLoading ||
@@ -74,6 +77,8 @@ export default function Reports() {
         const loc = locations.find(l => l.id === li.location_id);
         return sum + getInventoryItemValue(item, li.on_hand_quantity || 0, loc);
       }, 0);
+
+  const prepaidValue = (prepaidPoolsQuery.data || []).reduce((sum, pool) => sum + poolRemainingValue(pool), 0);
 
   const lowStockItems = locInv.filter(li => {
     const par = li.par_level || 0;
@@ -186,8 +191,15 @@ export default function Reports() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
         <StatCard label="Total Inventory Value" value={`$${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} icon={DollarSign} color="text-primary" />
+        <StatCard
+          label="Prepaid (vendor-held)"
+          value={`$${prepaidValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          sub="Prepaid pools across all locations"
+          icon={Layers}
+          color="text-info"
+        />
         <StatCard label="Total Items" value={items.filter(i => i.is_active).length} icon={Package} color="text-info" />
         <StatCard label="Low Stock Items" value={lowStockItems.length} icon={TrendingDown} color="text-warning" />
         <div className="bg-card border border-border rounded-xl p-4">

@@ -52,6 +52,7 @@ import InventoryInStoreOrders from "@/pages/inventory/InStoreOrders";
 import InventoryCommissary from "@/pages/inventory/Commissary.jsx";
 import InventoryTransfers from "@/pages/inventory/Transfers";
 import InventoryInvoices from "@/pages/inventory/Invoices";
+import InventoryPools from "@/pages/inventory/Pools";
 import InventoryVendors from "@/pages/inventory/Vendors";
 import InventoryReports from "@/pages/inventory/Reports.jsx";
 import InventoryRecipesPricing from "@/pages/inventory/RecipesPricing";
@@ -66,7 +67,6 @@ import RoasteryReleaseSchedule from "@/pages/roastery/ReleaseSchedule.jsx";
 import RoasteryPricingCalculator from "@/pages/roastery/PricingCalculator.jsx";
 import RoasteryInvoices from "@/pages/roastery/Invoices.jsx";
 import RoasteryReports from "@/pages/roastery/Reports.jsx";
-import RoasteryDataTools from "@/pages/roastery/DataTools.jsx";
 import RoasterySettings from "@/pages/roastery/Settings.jsx";
 
 import SuperAdminLayout from "@/components/layout/SuperAdminLayout";
@@ -166,7 +166,6 @@ const AuthenticatedApp = () => {
             <Route path="pricing" element={<RoasteryPricingCalculator />} />
             <Route path="invoices" element={<RoasteryInvoices />} />
             <Route path="reports" element={<RoasteryReports />} />
-            <Route path="data-tools" element={<RoasteryDataTools />} />
             <Route path="settings" element={<RoasterySettings />} />
           </Route>
           <Route element={<InventoryRoute />}>
@@ -181,6 +180,7 @@ const AuthenticatedApp = () => {
               <Route path="commissary" element={<InventoryCommissary />} />
               <Route path="transfers" element={<InventoryTransfers />} />
               <Route path="invoices" element={<InventoryInvoices />} />
+              <Route path="pools" element={<InventoryPools />} />
               <Route path="vendors" element={<InventoryVendors />} />
               <Route path="reports" element={<InventoryReports />} />
               <Route path="recipes-pricing" element={<InventoryRecipesPricing />} />
