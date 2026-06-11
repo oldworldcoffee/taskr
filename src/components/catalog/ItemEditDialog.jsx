@@ -180,7 +180,10 @@ export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave
       const f = initialFormRef.current;
       const draftForm = draft?.form;
       const source = draftForm || f;
-      setForm(source ? { ...source, purchase_options: (source.purchase_options || []).map(o => ({ ...o })) } : {});
+      // Resolve each option's vendor_name from the live vendor list (by id) so a
+      // renamed vendor shows its current name immediately, not the stale snapshot.
+      const resolveVendorName = (o) => (vendors || []).find(v => v.id === o.vendor_id)?.name || o.vendor_name || '';
+      setForm(source ? { ...source, purchase_options: (source.purchase_options || []).map(o => ({ ...o, vendor_name: resolveVendorName(o) })) } : {});
       setExpandedOption(null);
       if (draftForm && !restoredDraftToastRef.current) {
         restoredDraftToastRef.current = true;
