@@ -10,7 +10,7 @@ const RoasteryContext = createContext(null);
 // `company` carries the roastery's bag sizes and pricing defaults
 // (stored per company in roastery_settings) plus the taskr company name.
 export function RoasteryProvider({ children }) {
-  const { user } = useAuth();
+  const { user, hasRoasteryPermission } = useAuth();
   const queryClient = useQueryClient();
   const companyId = user?.company_id || null;
 
@@ -53,6 +53,10 @@ export function RoasteryProvider({ children }) {
     userRole: role,
     isAdmin,
     isManager,
+    hasRoasteryPermission,
+    // Can this user make inventory adjustments (managers/admins, or a granted
+    // roastery 'inventory_adjustments' permission)?
+    canAdjustInventory: hasRoasteryPermission('inventory_adjustments'),
     loading: Boolean(companyId) && loadingSettings,
     refresh: () => queryClient.invalidateQueries({ queryKey: ['roastery-settings', companyId] }),
   };

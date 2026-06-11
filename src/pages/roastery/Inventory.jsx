@@ -24,7 +24,7 @@ const kgToLbs = (kg) => parseFloat((kg * 2.20462).toFixed(1));
 import { toast } from 'sonner';
 
 export default function Inventory() {
-  const { companyId, isManager } = useCompany();
+  const { companyId, canAdjustInventory } = useCompany();
   const [lots, setLots] = useState([]);
   const [coffees, setCoffees] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
@@ -250,7 +250,7 @@ export default function Inventory() {
         <Button variant="outline" onClick={() => setShowArchived(a => !a)} className="gap-2">
           {showArchived ? <><ArchiveRestore className="w-4 h-4" /> View Active</> : <><Archive className="w-4 h-4" /> View Archived</>}
         </Button>
-        {isManager && !showArchived && (
+        {canAdjustInventory && !showArchived && (
           <Button onClick={() => setAddLotDialog(true)} className="gap-2">
             <Plus className="w-4 h-4" /> Add Lot
           </Button>
@@ -312,7 +312,7 @@ export default function Inventory() {
                       <td className="py-3 px-4 text-right font-medium">{formatCurrency(totalLbs * (lot.landed_cost_per_lb || 0))}</td>
                       <td className="py-3 px-4 text-xs text-muted-foreground">{warehouse?.name || '—'}</td>
                       <td className="py-3 px-4">
-                        {isManager && (
+                        {canAdjustInventory && (
                           <div className="flex gap-1">
                             {!showArchived ? (
                               <>
