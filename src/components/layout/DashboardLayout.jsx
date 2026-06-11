@@ -199,8 +199,11 @@ function NavGroup({
 
 function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, unreadForum, markChatSeen, markForumSeen }) {
   const role = user?.role;
-  const inventoryEnabled = company?.enabled_features?.includes("inventory") && ["admin", "manager", "super_admin"].includes(role);
-  const roasteryEnabled = ["admin", "manager", "super_admin"].includes(role);
+  const { userHasFeature, hasRoasteryLocation } = useAuth();
+  // Match the route guards: managers/admins by role, or any user with an
+  // explicit grant; a roastery/hybrid location auto-enables roastery for staff.
+  const inventoryEnabled = company?.enabled_features?.includes("inventory") && userHasFeature("inventory");
+  const roasteryEnabled = userHasFeature("roastery") || (hasRoasteryLocation && ["admin", "manager", "super_admin"].includes(role));
   const visibleTeamHubItems = teamHubItems.filter((item) => canSeeItem(item, role));
   const visiblePrimaryItems = primaryItems.filter((item) => canSeeItem(item, role));
   const isItemActive = (item) => item.exact ? isExact(item.path) : isActive(item.path);

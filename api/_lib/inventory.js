@@ -695,9 +695,15 @@ function makePdf(title, lines) {
   return pdf;
 }
 
+function hasInventoryGrant(user) {
+  const grant = (user?.feature_permissions || {}).inventory;
+  return grant === true || (grant && typeof grant === 'object' && grant.enabled === true);
+}
+
 async function requireInventoryAccess(client, user) {
-  if (!user?.company_id || !['admin', 'manager'].includes(user.role)) {
-    throw httpError(403, 'Inventory access requires a company admin or manager.');
+  const allowed = ['admin', 'manager'].includes(user?.role) || hasInventoryGrant(user);
+  if (!user?.company_id || !allowed) {
+    throw httpError(403, 'Inventory access requires a company admin, manager, or granted user.');
   }
 
   const { data: company, error } = await client

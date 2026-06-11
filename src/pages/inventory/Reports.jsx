@@ -22,6 +22,7 @@ export default function Reports() {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [snapshotDate, setSnapshotDate] = useState('');
   const [selectedLocationId, setSelectedLocationId] = useState('all');
+  const [selectedLocationType, setSelectedLocationType] = useState('all');
   const [dateRangeStart, setDateRangeStart] = useState('');
   const [dateRangeEnd, setDateRangeEnd] = useState('');
 
@@ -44,6 +45,16 @@ export default function Reports() {
     () => enrichLocationsWithInventorySettings(locationsQuery.data || [], settingsQuery.data || []),
     [locationsQuery.data, settingsQuery.data]
   );
+  // Filter by location type (retail/roastery/hybrid), then by specific location.
+  const locationsForType = useMemo(
+    () => selectedLocationType === 'all'
+      ? locations
+      : locations.filter(l => (l.location_type || 'retail') === selectedLocationType),
+    [locations, selectedLocationType]
+  );
+  const allowedLocationIds = useMemo(() => new Set(locationsForType.map(l => l.id)), [locationsForType]);
+  const locationIncluded = (locId) =>
+    selectedLocationId !== 'all' ? locId === selectedLocationId : allowedLocationIds.has(locId);
   const items = itemsQuery.data || [];
   const locInv = stockQuery.data || [];
   const orders = ordersQuery.data || [];
@@ -66,13 +77,13 @@ export default function Reports() {
   // Use snapshot data if viewing historical date, otherwise use current data
   const isViewingSnapshot = snapshotData && snapshotData.length > 0;
   
-  const totalValue = isViewingSnapshot 
+  const totalValue = isViewingSnapshot
     ? snapshotData.reduce((sum, snap) => {
-        if (selectedLocationId !== 'all' && snap.location_id !== selectedLocationId) return sum;
+        if (!locationIncluded(snap.location_id)) return sum;
         return sum + getInventorySnapshotValue(snap);
       }, 0)
     : locInv.reduce((sum, li) => {
-        if (selectedLocationId !== 'all' && li.location_id !== selectedLocationId) return sum;
+        if (!locationIncluded(li.location_id)) return sum;
         const item = items.find(i => i.id === li.item_id);
         const loc = locations.find(l => l.id === li.location_id);
         return sum + getInventoryItemValue(item, li.on_hand_quantity || 0, loc);
@@ -81,13 +92,14 @@ export default function Reports() {
   const prepaidValue = (prepaidPoolsQuery.data || []).reduce((sum, pool) => sum + poolRemainingValue(pool), 0);
 
   const lowStockItems = locInv.filter(li => {
+    if (!locationIncluded(li.location_id)) return false;
     const par = li.par_level || 0;
     return par > 0 && (li.on_hand_quantity || 0) < par;
   });
 
   // Per-location value data
-  const locValueData = locations.map((loc, idx) => {
-    if (selectedLocationId !== 'all' && loc.id !== selectedLocationId) {
+  const locValueData = locationsForType.map((loc, idx) => {
+    if (!locationIncluded(loc.id)) {
       return { name: loc.name, value: 0, color: COLORS[idx % COLORS.length] };
     }
     const val = isViewingSnapshot
@@ -109,12 +121,12 @@ export default function Reports() {
     const val = isViewingSnapshot
       ? snapshotData
           .filter(snap => {
-            if (selectedLocationId !== 'all' && snap.location_id !== selectedLocationId) return false;
+            if (!locationIncluded(snap.location_id)) return false;
             return catItems.some(i => i.id === snap.item_id);
           })
           .reduce((sum, snap) => sum + getInventorySnapshotValue(snap), 0)
       : locInv
-          .filter(li => catItems.some(i => i.id === li.item_id))
+          .filter(li => locationIncluded(li.location_id) && catItems.some(i => i.id === li.item_id))
           .reduce((sum, li) => {
             const item = items.find(i => i.id === li.item_id);
             const loc = locations.find(l => l.id === li.location_id);
@@ -175,6 +187,20 @@ export default function Reports() {
           />
         </div>
         
+        {/* Location type filter */}
+        <div className="flex items-center gap-2 bg-card border border-border rounded-lg px-3 py-1.5">
+          <select
+            value={selectedLocationType}
+            onChange={(e) => { setSelectedLocationType(e.target.value); setSelectedLocationId('all'); }}
+            className="bg-transparent text-sm text-foreground focus:outline-none capitalize"
+          >
+            <option value="all">All Types</option>
+            <option value="retail">Retail</option>
+            <option value="roastery">Roastery</option>
+            <option value="hybrid">Hybrid</option>
+          </select>
+        </div>
+
         {/* Location filter */}
         <div className="flex items-center gap-2 bg-card border border-border rounded-lg px-3 py-1.5">
           <MapPin className="w-4 h-4 text-muted-foreground" />
@@ -184,7 +210,7 @@ export default function Reports() {
             className="bg-transparent text-sm text-foreground focus:outline-none"
           >
             <option value="all">All Locations</option>
-            {locations.map(loc => (
+            {locationsForType.map(loc => (
               <option key={loc.id} value={loc.id}>{loc.name}</option>
             ))}
           </select>
