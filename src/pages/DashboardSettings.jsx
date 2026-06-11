@@ -162,7 +162,7 @@ export default function DashboardSettings() {
       const res = await base44.functions.invoke('createLocation', {
         name: locName.trim(),
         address: locAddress.trim(),
-        cash_drawer_amount: normalizeOptionalMoney(locDrawerAmount),
+        cash_drawer_amount: locType === "roastery" ? null : normalizeOptionalMoney(locDrawerAmount),
         timezone: locTimezone === TIMEZONE_UNSET ? null : locTimezone,
         location_type: locType,
       });
@@ -204,7 +204,7 @@ export default function DashboardSettings() {
       await base44.entities.Location.update(editingLoc.id, {
         name: editLocName.trim(),
         address: editLocAddress.trim(),
-        cash_drawer_amount: normalizeOptionalMoney(editLocDrawerAmount),
+        cash_drawer_amount: editLocType === "roastery" ? null : normalizeOptionalMoney(editLocDrawerAmount),
         timezone: editLocTimezone === TIMEZONE_UNSET ? null : editLocTimezone,
         location_type: editLocType,
       });
@@ -349,8 +349,14 @@ export default function DashboardSettings() {
                 <p className="font-medium text-sm">{loc.name}</p>
                 {loc.address && <p className="text-xs text-muted-foreground">{loc.address}</p>}
                 <p className="text-xs text-muted-foreground mt-1">
-                  Drawer: ${drawerForLocation(loc).toFixed(2)}
-                  {!hasLocationDrawerOverride(loc) && " default"}
+                  {loc.location_type === "roastery" ? (
+                    <span className="capitalize">Roastery</span>
+                  ) : (
+                    <>
+                      Drawer: ${drawerForLocation(loc).toFixed(2)}
+                      {!hasLocationDrawerOverride(loc) && " default"}
+                    </>
+                  )}
                   {" · "}
                   {loc.timezone ? loc.timezone.replace(/_/g, " ") : "Timezone not set (UTC)"}
                 </p>
@@ -386,19 +392,21 @@ export default function DashboardSettings() {
               </select>
               <p className="text-xs text-muted-foreground mt-1">Roastery or Hybrid locations enable roastery production features.</p>
             </div>
-            <div>
-              <Label>Cash Drawer Amount ($)</Label>
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                inputMode="decimal"
-                value={locDrawerAmount}
-                onChange={(e) => setLocDrawerAmount(e.target.value)}
-                onKeyDown={preventNegativeAmountKey}
-                placeholder={companyDrawerAmount || "200.00"}
-              />
-            </div>
+            {locType !== "roastery" && (
+              <div>
+                <Label>Cash Drawer Amount ($)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={locDrawerAmount}
+                  onChange={(e) => setLocDrawerAmount(e.target.value)}
+                  onKeyDown={preventNegativeAmountKey}
+                  placeholder={companyDrawerAmount || "200.00"}
+                />
+              </div>
+            )}
             <div>
               <Label>Timezone</Label>
               <TimezoneSelect value={locTimezone} onChange={setLocTimezone} />
@@ -425,19 +433,21 @@ export default function DashboardSettings() {
               </select>
               <p className="text-xs text-muted-foreground mt-1">Roastery or Hybrid locations enable roastery production features.</p>
             </div>
-            <div>
-              <Label>Cash Drawer Amount ($)</Label>
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                inputMode="decimal"
-                value={editLocDrawerAmount}
-                onChange={(e) => setEditLocDrawerAmount(e.target.value)}
-                onKeyDown={preventNegativeAmountKey}
-                placeholder={companyDrawerAmount || "200.00"}
-              />
-            </div>
+            {editLocType !== "roastery" && (
+              <div>
+                <Label>Cash Drawer Amount ($)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={editLocDrawerAmount}
+                  onChange={(e) => setEditLocDrawerAmount(e.target.value)}
+                  onKeyDown={preventNegativeAmountKey}
+                  placeholder={companyDrawerAmount || "200.00"}
+                />
+              </div>
+            )}
             <div>
               <Label>Timezone</Label>
               <TimezoneSelect value={editLocTimezone} onChange={setEditLocTimezone} />
