@@ -248,19 +248,41 @@ async function snapshotRoasteryCompany(client, companyId, { onlyDuringCatchupWin
   if (existingError) throw existingError;
   const existing = new Set((existingRows || []).map((row) => row.inventory_lot_id));
 
+  // Day-end (and day-start) lbs come from the roastery movements ledger as of
+  // the snapshot date, so backdated receipts/adjustments are reflected. Lots
+  // with no ledger movements default to 0.
+  const { data: qtyRows, error: qtyError } = await client.rpc('roastery_ledger_quantities', {
+    p_company_id: companyId,
+    p_date: date,
+  });
+  if (qtyError) throw qtyError;
+  const qtyByLot = new Map(
+    (qtyRows || []).map((row) => [row.inventory_lot_id, {
+      ohEnd: toNumber(row.on_hand_end, 0),
+      ohStart: toNumber(row.on_hand_start, 0),
+      whEnd: toNumber(row.warehoused_end, 0),
+      whStart: toNumber(row.warehoused_start, 0),
+    }])
+  );
+
   const rows = (lots || [])
     .filter((lot) => !existing.has(lot.id))
-    .map((lot) => ({
-      company_id: companyId,
-      snapshot_date: date,
-      inventory_lot_id: lot.id,
-      green_coffee_id: lot.green_coffee_id || null,
-      warehouse_location_id: lot.warehouse_location_id || null,
-      lbs_on_hand: toNumber(lot.lbs_on_hand, 0),
-      lbs_warehoused: toNumber(lot.lbs_warehoused, 0),
-      green_cost_per_lb: toNumber(lot.green_cost_per_lb, 0),
-      landed_cost_per_lb: toNumber(lot.landed_cost_per_lb ?? lot.green_cost_per_lb, 0),
-    }));
+    .map((lot) => {
+      const q = qtyByLot.get(lot.id) || { ohEnd: 0, ohStart: 0, whEnd: 0, whStart: 0 };
+      return {
+        company_id: companyId,
+        snapshot_date: date,
+        inventory_lot_id: lot.id,
+        green_coffee_id: lot.green_coffee_id || null,
+        warehouse_location_id: lot.warehouse_location_id || null,
+        lbs_on_hand: q.ohEnd,
+        lbs_warehoused: q.whEnd,
+        day_start_lbs_on_hand: q.ohStart,
+        day_start_lbs_warehoused: q.whStart,
+        green_cost_per_lb: toNumber(lot.green_cost_per_lb, 0),
+        landed_cost_per_lb: toNumber(lot.landed_cost_per_lb ?? lot.green_cost_per_lb, 0),
+      };
+    });
 
   if (rows.length) {
     const { error: insertError } = await client.from('roastery_inventory_snapshots').insert(rows);

@@ -30,6 +30,7 @@ export default function InventoryCounts() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [countDate, setCountDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [countMode, setCountMode] = useState('day_end');
   const [savingDraft, setSavingDraft] = useState(false);
   const [companyId, setCompanyId] = useState(null);
   const [unallocatedSearch, setUnallocatedSearch] = useState('');
@@ -504,6 +505,7 @@ export default function InventoryCounts() {
         itemQtyMap,
         locInvMap,
         countDate,
+        countMode,
       });
       
       toast.success(`Updated ${result.data.updated + result.data.created} inventory records`);
@@ -598,7 +600,16 @@ export default function InventoryCounts() {
               {!isSubmitted && (
                 <>
                   <div className="flex items-center gap-1">
-                    <label className="text-xs text-muted-foreground whitespace-nowrap" htmlFor="count-date">As of</label>
+                    <select
+                      value={countMode}
+                      onChange={e => setCountMode(e.target.value)}
+                      className={`border border-input rounded-md bg-background ${isMobile ? 'text-xs px-1.5 py-1 h-8' : 'text-sm px-2 py-1.5'}`}
+                      title="Day Start = inventory before the day's orders/transfers/production. Day End = after the day's activity."
+                    >
+                      <option value="day_end">Day End</option>
+                      <option value="day_start">Day Start</option>
+                    </select>
+                    <label className="text-xs text-muted-foreground whitespace-nowrap" htmlFor="count-date">on</label>
                     <input
                       id="count-date"
                       type="date"

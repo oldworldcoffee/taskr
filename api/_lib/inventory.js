@@ -2385,7 +2385,13 @@ async function submitInventoryCount(client, user, body) {
   const countDate = (typeof body.countDate === 'string' && body.countDate && body.countDate <= today)
     ? body.countDate
     : today;
-  const isBackdated = countDate < today;
+  // Count mode (spec #5): a 'day_start' count is the inventory BEFORE that day's
+  // activity, i.e. as of the end of the previous day; 'day_end' is after the
+  // day's activity. The effective reconcile date is the day before for
+  // day_start, otherwise the count date itself.
+  const countMode = body.countMode === 'day_start' ? 'day_start' : 'day_end';
+  const reconcileDate = countMode === 'day_start' ? previousLocalDate(countDate) : countDate;
+  const isBackdated = reconcileDate < today;
 
   // Current on-hand + item cost so each counted item records a count_reconcile
   // movement in the ledger.
@@ -2416,7 +2422,7 @@ async function submitInventoryCount(client, user, body) {
       .select('item_id, quantity_delta')
       .eq('company_id', companyId)
       .eq('location_id', locationId)
-      .lte('movement_date', countDate);
+      .lte('movement_date', reconcileDate);
     if (movesError) throw movesError;
     for (const m of moves || []) {
       asOfByItem.set(m.item_id, (asOfByItem.get(m.item_id) || 0) + toNumber(m.quantity_delta, 0));
@@ -2457,7 +2463,7 @@ async function submitInventoryCount(client, user, body) {
         company_id: companyId,
         location_id: locationId,
         item_id: itemId,
-        movement_date: countDate,
+        movement_date: reconcileDate,
         quantity_delta: delta,
         unit_cost: costByItem.get(itemId) || 0,
         source_type: 'count_reconcile',
@@ -2478,7 +2484,7 @@ async function submitInventoryCount(client, user, body) {
     const { error: recalcError } = await client.rpc('recalculate_inventory_snapshots', {
       p_company_id: companyId,
       p_location_id: locationId,
-      p_from_date: countDate,
+      p_from_date: reconcileDate,
       p_item_ids: affectedItemIds,
       p_reason: 'backdated_count',
       p_changed_by: user.id || null,
@@ -2491,6 +2497,7 @@ async function submitInventoryCount(client, user, body) {
     submitted_at: nowIso(),
     submitted_by: user.email,
     count_date: countDate,
+    count_mode: countMode,
   });
 
   return { success: true, updated, created };
