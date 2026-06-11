@@ -10,6 +10,8 @@ const asNumber = (value) => {
   return Number.isFinite(number) ? number : 0;
 };
 const money = (value) => asNumber(value).toFixed(2);
+const PARTIAL_STATUSES = new Set(['partial', 'partially_received']);
+const receivedCount = (order) => asArray(order?.items).reduce((sum, item) => sum + asNumber(item.quantity_received), 0);
 const formatSentAt = (value) => {
   if (!value) return '—';
   const date = new Date(value);
@@ -37,7 +39,7 @@ export default function OrderHistory({ orders = [], locName, vendorName, onView,
               <StatusBadge status={o.status} />
             </div>
             <div className="flex items-center justify-between text-sm border-t border-border pt-2">
-              <span className="text-muted-foreground">{asArray(o.items).length} items{o.status === 'partial' && <span className="text-green-600 font-medium ml-1">({asArray(o.items).reduce((s, i) => s + asNumber(i.quantity_received), 0)} received)</span>}</span>
+              <span className="text-muted-foreground">{asArray(o.items).length} items{PARTIAL_STATUSES.has(o.status) && <span className="text-green-600 font-medium ml-1">({receivedCount(o)} received)</span>}</span>
               <span className="font-semibold">${money(o.total_amount)}</span>
             </div>
             <div className="flex gap-2 pt-1">
@@ -85,9 +87,9 @@ export default function OrderHistory({ orders = [], locName, vendorName, onView,
               <td className="px-4 py-3">{vendorName(o.vendor_id)}</td>
               <td className="px-4 py-3">
                 <div className="text-muted-foreground">{asArray(o.items).length} items</div>
-                {o.status === 'partial' && (
+                {PARTIAL_STATUSES.has(o.status) && (
                   <div className="text-xs text-green-600 font-medium">
-                    {asArray(o.items).reduce((sum, item) => sum + asNumber(item.quantity_received), 0)} received
+                    {receivedCount(o)} received
                   </div>
                 )}
               </td>

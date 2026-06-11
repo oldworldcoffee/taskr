@@ -69,6 +69,42 @@ const LocationSelector = ({ selected, onChange, locations }) => {
   );
 };
 
+const ROASTERY_PERMISSIONS = [
+  { key: "view_production", label: "View production" },
+  { key: "manage_production", label: "Manage production" },
+  { key: "inventory_adjustments", label: "Inventory adjustments" },
+  { key: "reporting", label: "Reporting" },
+];
+
+// Per-user feature grants (users.feature_permissions). Admins/managers already
+// get everything by role; these grants extend access to supervisors/employees.
+const FeatureAccessSelector = ({ value, onChange }) => {
+  const features = value || {};
+  const roastery = (features.roastery && typeof features.roastery === "object") ? features.roastery : {};
+  return (
+    <div className="space-y-1">
+      <label className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-muted/40 cursor-pointer">
+        <Checkbox checked={!!features.inventory} onCheckedChange={(c) => onChange({ ...features, inventory: !!c })} />
+        <span className="text-sm">Inventory</span>
+      </label>
+      <label className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-muted/40 cursor-pointer">
+        <Checkbox checked={!!roastery.enabled} onCheckedChange={(c) => onChange({ ...features, roastery: { ...roastery, enabled: !!c } })} />
+        <span className="text-sm">Roastery</span>
+      </label>
+      {roastery.enabled && (
+        <div className="ml-7 space-y-1 border-l border-border pl-3">
+          {ROASTERY_PERMISSIONS.map((p) => (
+            <label key={p.key} className="flex items-center gap-3 py-1 cursor-pointer">
+              <Checkbox checked={!!roastery[p.key]} onCheckedChange={(c) => onChange({ ...features, roastery: { ...roastery, enabled: true, [p.key]: !!c } })} />
+              <span className="text-xs">{p.label}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export default function DashboardEmployees() {
   const queryClient = useQueryClient();
   const { user: currentUser } = useAuth();
@@ -83,6 +119,7 @@ export default function DashboardEmployees() {
   const [editUser, setEditUser] = useState(null);
   const [editRole, setEditRole] = useState("employee");
   const [editLocations, setEditLocations] = useState([]);
+  const [editFeatures, setEditFeatures] = useState({});
   const [saving, setSaving] = useState(false);
 
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -102,11 +139,6 @@ export default function DashboardEmployees() {
     queryFn: () => base44.entities.Location.filter({ company_id: currentUser.company_id }),
   });
 
-  const { data: completions = [] } = useQuery({
-    queryKey: ["all-completions-employee", currentUser?.company_id],
-    queryFn: () => base44.entities.TaskCompletion.filter({ company_id: currentUser.company_id }),
-  });
-
   const { data: pendingInvites = [] } = useQuery({
     queryKey: ["pending-invites"],
     queryFn: () => base44.entities.PendingInvite.filter({ company_id: currentUser.company_id }),
@@ -116,11 +148,7 @@ export default function DashboardEmployees() {
   const registeredEmails = new Set(users.map(u => u.email?.toLowerCase()));
   const activePendingInvites = pendingInvites.filter(inv => !registeredEmails.has(inv.email?.toLowerCase()));
 
-  const employeeStats = users.map((u) => {
-    const userCompletions = completions.filter((c) => c.completed_by_email === u.email && !c.is_flag);
-    const userFlags = completions.filter((c) => c.completed_by_email === u.email && c.is_flag);
-    return { ...u, tasksCompleted: userCompletions.length, flagsRaised: userFlags.length };
-  });
+  const employeeStats = users;
 
   const getLocationNames = (ids = []) => {
     if (!ids.length) return "All locations";
@@ -182,6 +210,7 @@ export default function DashboardEmployees() {
     setEditUser(user);
     setEditRole(user.role || "employee");
     setEditLocations(user.assigned_locations || []);
+    setEditFeatures(user.feature_permissions && typeof user.feature_permissions === "object" ? user.feature_permissions : {});
   };
 
   const handleSavePermissions = async () => {
@@ -189,6 +218,7 @@ export default function DashboardEmployees() {
     await base44.entities.User.update(editUser.id, {
       role: editRole,
       assigned_locations: editLocations,
+      feature_permissions: editFeatures,
     });
     queryClient.invalidateQueries({ queryKey: ["all-users"] });
     toast.success("Permissions updated");
@@ -225,8 +255,6 @@ export default function DashboardEmployees() {
                   <TableHead className="font-semibold">Employee</TableHead>
                   <TableHead className="font-semibold">Role</TableHead>
                   <TableHead className="font-semibold">Location Access</TableHead>
-                  <TableHead className="font-semibold">Tasks</TableHead>
-                  <TableHead className="font-semibold">Flags</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -250,8 +278,6 @@ export default function DashboardEmployees() {
                     <TableCell className="text-xs text-muted-foreground max-w-[200px] truncate">
                       {getLocationNames(emp.assigned_locations)}
                     </TableCell>
-                    <TableCell className="font-semibold">{emp.tasksCompleted}</TableCell>
-                    <TableCell>{emp.flagsRaised}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
                         {!(currentUser?.role === "manager" && emp.role === "admin") && (
@@ -407,6 +433,15 @@ export default function DashboardEmployees() {
               <Label className="text-sm font-semibold mb-1 block">Location Access</Label>
               <p className="text-xs text-muted-foreground mb-2">Leave all unchecked to grant access to all locations.</p>
               <LocationSelector selected={editLocations} onChange={setEditLocations} locations={activeLocations} />
+            </div>
+            <div>
+              <Label className="text-sm font-semibold mb-1 block">Feature Access</Label>
+              <p className="text-xs text-muted-foreground mb-2">
+                {["admin", "manager"].includes(editRole)
+                  ? "Admins and managers already have full feature access by role."
+                  : "Grant Inventory or Roastery access to this user."}
+              </p>
+              <FeatureAccessSelector value={editFeatures} onChange={setEditFeatures} />
             </div>
           </div>
           <DialogFooter>

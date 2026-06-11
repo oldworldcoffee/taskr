@@ -29,6 +29,7 @@ export default function InventoryCounts() {
   const [form, setForm] = useState({ location_id: '', count_type: 'full', category: '' });
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [countDate, setCountDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [savingDraft, setSavingDraft] = useState(false);
   const [companyId, setCompanyId] = useState(null);
   const [unallocatedSearch, setUnallocatedSearch] = useState('');
@@ -502,6 +503,7 @@ export default function InventoryCounts() {
         companyId: countCompanyId,
         itemQtyMap,
         locInvMap,
+        countDate,
       });
       
       toast.success(`Updated ${result.data.updated + result.data.created} inventory records`);
@@ -595,6 +597,18 @@ export default function InventoryCounts() {
               </Button>
               {!isSubmitted && (
                 <>
+                  <div className="flex items-center gap-1">
+                    <label className="text-xs text-muted-foreground whitespace-nowrap" htmlFor="count-date">As of</label>
+                    <input
+                      id="count-date"
+                      type="date"
+                      value={countDate}
+                      max={format(new Date(), 'yyyy-MM-dd')}
+                      onChange={e => setCountDate(e.target.value || format(new Date(), 'yyyy-MM-dd'))}
+                      className={`border border-input rounded-md bg-background ${isMobile ? 'text-xs px-1.5 py-1 h-8' : 'text-sm px-2 py-1.5'}`}
+                      title="Effective date for this count. Backdating recalculates history."
+                    />
+                  </div>
                   <Button variant="outline" onClick={saveDraft} disabled={savingDraft} className={isMobile ? "text-xs px-2 py-1 h-8" : ""}>
                     {savingDraft ? 'Saving...' : 'Save Draft'}
                   </Button>

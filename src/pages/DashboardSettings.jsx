@@ -102,12 +102,14 @@ export default function DashboardSettings() {
   const [locAddress, setLocAddress] = useState("");
   const [locDrawerAmount, setLocDrawerAmount] = useState("");
   const [locTimezone, setLocTimezone] = useState(getBrowserTimezone());
+  const [locType, setLocType] = useState("retail");
   const [editLocDialog, setEditLocDialog] = useState(false);
   const [editingLoc, setEditingLoc] = useState(null);
   const [editLocName, setEditLocName] = useState("");
   const [editLocAddress, setEditLocAddress] = useState("");
   const [editLocDrawerAmount, setEditLocDrawerAmount] = useState("");
   const [editLocTimezone, setEditLocTimezone] = useState(TIMEZONE_UNSET);
+  const [editLocType, setEditLocType] = useState("retail");
   const [deleteLocDialog, setDeleteLocDialog] = useState(false);
   const [deletingLoc, setDeletingLoc] = useState(null);
   const [companyDrawerAmount, setCompanyDrawerAmount] = useState("200.00");
@@ -162,6 +164,7 @@ export default function DashboardSettings() {
         address: locAddress.trim(),
         cash_drawer_amount: normalizeOptionalMoney(locDrawerAmount),
         timezone: locTimezone === TIMEZONE_UNSET ? null : locTimezone,
+        location_type: locType,
       });
       if (res.data.error) {
         toast.error(res.data.error);
@@ -173,6 +176,7 @@ export default function DashboardSettings() {
       setLocAddress("");
       setLocDrawerAmount("");
       setLocTimezone(getBrowserTimezone());
+      setLocType("retail");
       toast.success("Location added");
     } catch (err) {
       toast.error(err.message || "Failed to add location");
@@ -190,6 +194,7 @@ export default function DashboardSettings() {
     setEditLocAddress(loc.address || "");
     setEditLocDrawerAmount(hasLocationDrawerOverride(loc) ? formatMoneyInput(loc.cash_drawer_amount) : "");
     setEditLocTimezone(loc.timezone || TIMEZONE_UNSET);
+    setEditLocType(loc.location_type || "retail");
     setEditLocDialog(true);
   };
 
@@ -201,6 +206,7 @@ export default function DashboardSettings() {
         address: editLocAddress.trim(),
         cash_drawer_amount: normalizeOptionalMoney(editLocDrawerAmount),
         timezone: editLocTimezone === TIMEZONE_UNSET ? null : editLocTimezone,
+        location_type: editLocType,
       });
       queryClient.invalidateQueries({ queryKey: ["locations"] });
       setEditLocDialog(false);
@@ -372,6 +378,15 @@ export default function DashboardSettings() {
             <div><Label>Name</Label><Input value={locName} onChange={(e) => setLocName(e.target.value)} placeholder="e.g. Midtown" /></div>
             <div><Label>Address</Label><Input value={locAddress} onChange={(e) => setLocAddress(e.target.value)} placeholder="Full address" /></div>
             <div>
+              <Label>Location Type</Label>
+              <select className="mt-1 w-full border border-input rounded-md px-3 py-2 text-sm bg-background" value={locType} onChange={(e) => setLocType(e.target.value)}>
+                <option value="retail">Retail</option>
+                <option value="roastery">Roastery</option>
+                <option value="hybrid">Hybrid (retail + roastery)</option>
+              </select>
+              <p className="text-xs text-muted-foreground mt-1">Roastery or Hybrid locations enable roastery production features.</p>
+            </div>
+            <div>
               <Label>Cash Drawer Amount ($)</Label>
               <Input
                 type="number"
@@ -401,6 +416,15 @@ export default function DashboardSettings() {
           <div className="space-y-3">
             <div><Label>Name</Label><Input value={editLocName} onChange={(e) => setEditLocName(e.target.value)} /></div>
             <div><Label>Address</Label><Input value={editLocAddress} onChange={(e) => setEditLocAddress(e.target.value)} placeholder="Full address" /></div>
+            <div>
+              <Label>Location Type</Label>
+              <select className="mt-1 w-full border border-input rounded-md px-3 py-2 text-sm bg-background" value={editLocType} onChange={(e) => setEditLocType(e.target.value)}>
+                <option value="retail">Retail</option>
+                <option value="roastery">Roastery</option>
+                <option value="hybrid">Hybrid (retail + roastery)</option>
+              </select>
+              <p className="text-xs text-muted-foreground mt-1">Roastery or Hybrid locations enable roastery production features.</p>
+            </div>
             <div>
               <Label>Cash Drawer Amount ($)</Label>
               <Input

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
+import { recordMovement, recalculateSnapshots } from '@/lib/inventoryLedger';
 import { useAuth } from '@/lib/AuthContext';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { Plus, ArrowLeftRight, CheckCircle, Eye, Search, ShoppingCart, Package, Trash2, Minus } from 'lucide-react';
@@ -10,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import PageHeader from '@/components/layout/PageHeader';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { format } from 'date-fns';
+import { toast } from 'sonner';
 
 export default function Transfers() {
   const { canAccessLocation } = useAuth();
@@ -19,7 +21,10 @@ export default function Transfers() {
   const [transfers, setTransfers] = useState([]);
   const [newDialog, setNewDialog] = useState(false);
   const [viewDialog, setViewDialog] = useState(null);
-  const [form, setForm] = useState({ from_location_id: '', to_location_id: '', items: [], notes: '' });
+  const [receiveDialog, setReceiveDialog] = useState(null);
+  const [receiveDate, setReceiveDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [receiving, setReceiving] = useState(false);
+  const [form, setForm] = useState({ from_location_id: '', to_location_id: '', items: [], notes: '', transfer_date: format(new Date(), 'yyyy-MM-dd') });
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -97,53 +102,120 @@ export default function Transfers() {
     setForm(f => ({ ...f, items: f.items.filter((_, i) => i !== idx) }));
   };
 
+  const costOf = (itemId) => Number(items.find(i => i.id === itemId)?.unit_cost || 0);
+
+  // Recompute snapshots at a location from a backdated movement date forward.
+  const recalcTransfer = async (locationId, itemIds, moveDate) => {
+    const today = format(new Date(), 'yyyy-MM-dd');
+    if (!locationId || !moveDate || moveDate >= today) return;
+    try {
+      await recalculateSnapshots({
+        companyId,
+        locationId,
+        fromDate: moveDate,
+        itemIds: [...new Set(itemIds)],
+        reason: 'backdated_transfer',
+      });
+    } catch (error) {
+      console.error('Transfer snapshot recalc failed:', error);
+    }
+  };
+
   const submitTransfer = async (immediate = false) => {
     // Validate no negative quantities
     if (form.items.some(i => i.quantity < 0 || isNaN(i.quantity))) {
       alert('Quantities cannot be negative');
       return;
     }
+    const moveDate = form.transfer_date || format(new Date(), 'yyyy-MM-dd');
+    const { transfer_date, ...transferFields } = form;
     const transfer = await base44.entities.Transfer.create({
       company_id: companyId,
-      ...form,
+      ...transferFields,
       status: immediate ? 'received' : 'in_transit',
       transfer_number: `TR-${Date.now().toString().slice(-6)}`,
-      dispatched_at: new Date().toISOString(),
-      received_at: immediate ? new Date().toISOString() : null,
+      dispatched_at: new Date(`${moveDate}T12:00:00`).toISOString(),
+      received_at: immediate ? new Date(`${moveDate}T12:00:00`).toISOString() : null,
     });
-    // Deduct from source
+    const transferRef = `Transfer ${transfer.transfer_number || ''}`.trim();
+    // Deduct from source (transfer out) via the ledger.
     for (const item of form.items) {
-      const li = locInv.find(l => l.location_id === form.from_location_id && l.item_id === item.item_id);
-      if (li) {
-        const newQty = Math.max(0, (li.on_hand_quantity || 0) - item.quantity);
-        await base44.entities.LocationInventory.update(li.id, { ...li, on_hand_quantity: newQty });
-      }
+      await recordMovement({
+        companyId,
+        locationId: form.from_location_id,
+        itemId: item.item_id,
+        quantityDelta: -Math.abs(Number(item.quantity) || 0),
+        unitCost: costOf(item.item_id),
+        sourceType: 'transfer_out',
+        movementDate: moveDate,
+        sourceId: transfer.id,
+        notes: transferRef,
+      });
     }
-    // If immediate, add to destination
+    // If immediate, add to destination (transfer in).
     if (immediate) {
       for (const item of form.items) {
-        const li = locInv.find(l => l.location_id === form.to_location_id && l.item_id === item.item_id);
-        const newQty = (li?.on_hand_quantity || 0) + item.quantity;
-        if (li) await base44.entities.LocationInventory.update(li.id, { ...li, on_hand_quantity: newQty });
-        else await base44.entities.LocationInventory.create({ company_id: companyId, location_id: form.to_location_id, item_id: item.item_id, on_hand_quantity: newQty, par_level: 0, reorder_point: 0 });
+        await recordMovement({
+          companyId,
+          locationId: form.to_location_id,
+          itemId: item.item_id,
+          quantityDelta: Math.abs(Number(item.quantity) || 0),
+          unitCost: costOf(item.item_id),
+          sourceType: 'transfer_in',
+          movementDate: moveDate,
+          sourceId: transfer.id,
+          notes: transferRef,
+        });
       }
     }
+    // Backdated transfer: recompute history at the affected locations.
+    const itemIds = form.items.map(i => i.item_id);
+    await recalcTransfer(form.from_location_id, itemIds, moveDate);
+    if (immediate) await recalcTransfer(form.to_location_id, itemIds, moveDate);
+
     await load();
     setNewDialog(false);
-    setForm({ from_location_id: '', to_location_id: '', items: [], notes: '' });
+    setForm({ from_location_id: '', to_location_id: '', items: [], notes: '', transfer_date: format(new Date(), 'yyyy-MM-dd') });
   };
 
-  const receiveTransfer = async (transfer) => {
-    await base44.entities.Transfer.update(transfer.id, { status: 'received', received_at: new Date().toISOString() });
-    // Add to destination
-    for (const item of (transfer.items || [])) {
-      const li = locInv.find(l => l.location_id === transfer.to_location_id && l.item_id === item.item_id);
-      const newQty = (li?.on_hand_quantity || 0) + item.quantity;
-      if (li) await base44.entities.LocationInventory.update(li.id, { ...li, on_hand_quantity: newQty });
-      else await base44.entities.LocationInventory.create({ company_id: companyId, location_id: transfer.to_location_id, item_id: item.item_id, on_hand_quantity: newQty, par_level: 0, reorder_point: 0 });
+  const openReceiveTransfer = (transfer) => {
+    setReceiveDate(format(new Date(), 'yyyy-MM-dd'));
+    setReceiveDialog(transfer);
+  };
+
+  const confirmReceiveTransfer = async () => {
+    const transfer = receiveDialog;
+    if (!transfer) return;
+    setReceiving(true);
+    try {
+      const moveDate = receiveDate || format(new Date(), 'yyyy-MM-dd');
+      await base44.entities.Transfer.update(transfer.id, {
+        status: 'received',
+        received_at: new Date(`${moveDate}T12:00:00`).toISOString(),
+      });
+      const transferRef = `Transfer ${transfer.transfer_number || ''}`.trim();
+      for (const item of (transfer.items || [])) {
+        await recordMovement({
+          companyId,
+          locationId: transfer.to_location_id,
+          itemId: item.item_id,
+          quantityDelta: Math.abs(Number(item.quantity) || 0),
+          unitCost: costOf(item.item_id),
+          sourceType: 'transfer_in',
+          movementDate: moveDate,
+          sourceId: transfer.id,
+          notes: transferRef,
+        });
+      }
+      await recalcTransfer(transfer.to_location_id, (transfer.items || []).map(i => i.item_id), moveDate);
+      await load();
+      setReceiveDialog(null);
+      setViewDialog(null);
+    } catch (error) {
+      toast.error(error.message || 'Failed to receive transfer');
+    } finally {
+      setReceiving(false);
     }
-    await load();
-    setViewDialog(null);
   };
 
   const locName = (id) => allLocations.find(l => l.id === id)?.name || locations.find(l => l.id === id)?.name || '—';
@@ -181,7 +253,7 @@ export default function Transfers() {
                   <Eye className="w-4 h-4 mr-1" />View
                 </Button>
                 {t.status === 'in_transit' && (
-                  <Button size="sm" className="flex-1 h-9 text-white bg-green-600 hover:bg-green-700" onClick={() => receiveTransfer(t)}>
+                  <Button size="sm" className="flex-1 h-9 text-white bg-green-600 hover:bg-green-700" onClick={() => openReceiveTransfer(t)}>
                     <CheckCircle className="w-4 h-4 mr-1" />Receive
                   </Button>
                 )}
@@ -214,7 +286,7 @@ export default function Transfers() {
                     <div className="flex gap-1">
                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setViewDialog(t)}><Eye className="w-3.5 h-3.5" /></Button>
                       {t.status === 'in_transit' && (
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-green-600" onClick={() => receiveTransfer(t)}><CheckCircle className="w-3.5 h-3.5" /></Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-green-600" onClick={() => openReceiveTransfer(t)}><CheckCircle className="w-3.5 h-3.5" /></Button>
                       )}
                     </div>
                   </td>
@@ -244,6 +316,11 @@ export default function Transfers() {
                   <option value="">Select...</option>
                   {allLocations.filter(l => l.id !== form.from_location_id).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
                 </select>
+              </div>
+              <div>
+                <Label>Transfer Date</Label>
+                <Input type="date" className="mt-1" value={form.transfer_date} onChange={e => setForm(f => ({ ...f, transfer_date: e.target.value || format(new Date(), 'yyyy-MM-dd') }))} />
+                <p className="text-xs text-muted-foreground mt-1">Effective date for inventory. Backdating updates history.</p>
               </div>
             </div>
 
@@ -445,13 +522,38 @@ export default function Transfers() {
                 </table>
               </div>
               {viewDialog.status === 'in_transit' && (
-                <Button className="w-full" onClick={() => receiveTransfer(viewDialog)}>
+                <Button className="w-full" onClick={() => openReceiveTransfer(viewDialog)}>
                   <CheckCircle className={isMobile ? "w-3 h-3 mr-1" : "w-4 h-4 mr-1"} />Confirm Receipt & Update Stock
                 </Button>
               )}
             </div>
           )}
           <DialogFooter><Button variant="outline" onClick={() => setViewDialog(null)}>Close</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!receiveDialog} onOpenChange={(open) => { if (!open) setReceiveDialog(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Receive transfer {receiveDialog?.transfer_number}</DialogTitle></DialogHeader>
+          {receiveDialog && (
+            <div className="space-y-3 py-2 text-sm">
+              <div className="rounded-md border border-border bg-muted/30 p-2">
+                <p>{locName(receiveDialog.from_location_id)} → <span className="font-medium">{locName(receiveDialog.to_location_id)}</span></p>
+                <p className="text-xs text-muted-foreground">{(receiveDialog.items || []).length} item{(receiveDialog.items || []).length === 1 ? '' : 's'}</p>
+              </div>
+              <div>
+                <Label>Received Date</Label>
+                <Input type="date" className="mt-1" value={receiveDate} onChange={e => setReceiveDate(e.target.value || format(new Date(), 'yyyy-MM-dd'))} />
+                <p className="text-xs text-muted-foreground mt-1">Drives inventory at the destination. Backdating updates history.</p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReceiveDialog(null)} disabled={receiving}>Cancel</Button>
+            <Button onClick={confirmReceiveTransfer} disabled={receiving}>
+              <CheckCircle className="w-4 h-4 mr-1" />{receiving ? 'Receiving...' : 'Confirm Receipt'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

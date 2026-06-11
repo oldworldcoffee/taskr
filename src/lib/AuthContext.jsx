@@ -182,6 +182,26 @@ export const AuthProvider = ({ children }) => {
       }
     : null;
 
+  // Per-user feature access & roastery permissions (users.feature_permissions).
+  const featurePermissions = user?.feature_permissions || {};
+  // A roastery/hybrid location automatically enables roastery functionality.
+  const hasRoasteryLocation = allLocations.some(
+    (loc) => ['roastery', 'hybrid'].includes(loc?.location_type)
+  );
+  // Managers/admins always have feature access; others need an explicit grant.
+  const userHasFeature = useCallback((feature) => {
+    if (['admin', 'manager', 'super_admin'].includes(user?.role)) return true;
+    const grant = (user?.feature_permissions || {})[feature];
+    return grant === true || (grant && typeof grant === 'object' && grant.enabled === true);
+  }, [user?.role, user?.feature_permissions]);
+  // Roastery sub-permissions: view_production, manage_production,
+  // inventory_adjustments, reporting. Admins/managers get all.
+  const hasRoasteryPermission = useCallback((permission) => {
+    if (['admin', 'manager', 'super_admin'].includes(user?.role)) return true;
+    const roastery = (user?.feature_permissions || {}).roastery;
+    return Boolean(roastery && typeof roastery === 'object' && roastery[permission]);
+  }, [user?.role, user?.feature_permissions]);
+
   return (
     <AuthContext.Provider value={{
       user,
@@ -200,7 +220,11 @@ export const AuthProvider = ({ children }) => {
       canAccessLocation,
       canAccessCommissary,
       getManagedCommissaryLocationIds,
-      userPermission
+      userPermission,
+      featurePermissions,
+      hasRoasteryLocation,
+      userHasFeature,
+      hasRoasteryPermission
     }}>
       {children}
     </AuthContext.Provider>
