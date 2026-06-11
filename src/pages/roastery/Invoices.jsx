@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { roastery } from '@/api/roastery';
+import { recalculateRoasterySnapshots } from '@/lib/roasteryLedger';
 import { useCompany } from '@/components/roastery/RoasteryContext';
 import PageHeader from '@/components/roastery/PageHeader';
 import StatusBadge from '@/components/roastery/StatusBadge';
@@ -158,6 +159,7 @@ export default function Invoices() {
   // Updates lots to add lbs_on_hand (coffee physically arrived at roastery)
   const handleReceive = async (inv) => {
     const today = receiveDate || new Date().toISOString().split('T')[0];
+    const affectedLotIds = [];
 
     for (const li of (inv.line_items || [])) {
       const lbs = li.total_lbs || 0;
@@ -168,11 +170,33 @@ export default function Invoices() {
       );
       if (!lot) continue;
 
+      const oldOnHand = lot.lbs_on_hand || 0;
+      const oldWarehoused = lot.lbs_warehoused || 0;
       await roastery.entities.InventoryLot.update(li.inventory_lot_id, {
         lbs_on_hand: lbs,
         lbs_warehoused: 0,
         notes: '',
       });
+      // Ledger movements (received date drives roastery history). The lot cache
+      // is set above; these record the signed deltas.
+      const movementBase = {
+        company_id: companyId,
+        inventory_lot_id: lot.id,
+        green_coffee_id: lot.green_coffee_id || null,
+        warehouse_location_id: lot.warehouse_location_id || null,
+        movement_date: today,
+        green_cost_per_lb: parseFloat(lot.green_cost_per_lb) || 0,
+        landed_cost_per_lb: parseFloat(lot.landed_cost_per_lb || lot.green_cost_per_lb) || 0,
+        source_type: 'receipt',
+        source_id: inv.id,
+      };
+      if (lbs - oldOnHand !== 0) {
+        await roastery.entities.InventoryMovement.create({ ...movementBase, bucket: 'on_hand', lbs_delta: lbs - oldOnHand });
+      }
+      if (oldWarehoused !== 0) {
+        await roastery.entities.InventoryMovement.create({ ...movementBase, bucket: 'warehoused', lbs_delta: -oldWarehoused });
+      }
+      affectedLotIds.push(lot.id);
     }
 
     await roastery.entities.Invoice.update(inv.id, {
@@ -180,6 +204,16 @@ export default function Invoices() {
       received_by_id: currentUser?.id,
       received_date: today,
     });
+
+    // Backdated receiving: recompute roastery snapshots from the received date.
+    const realToday = new Date().toISOString().split('T')[0];
+    if (today < realToday && affectedLotIds.length) {
+      try {
+        await recalculateRoasterySnapshots({ companyId, fromDate: today, lotIds: affectedLotIds, reason: 'backdated_roastery_receipt', sourceId: inv.id });
+      } catch (error) {
+        console.error('Roastery snapshot recalc failed:', error);
+      }
+    }
 
     toast.success('Coffee received — inventory updated!');
     setReceiveDialog(null);

@@ -73,6 +73,25 @@ export default function Inventory() {
   const warehouseMap = Object.fromEntries(warehouses.map(w => [w.id, w]));
   const visibleLots = lots.filter(l => showArchived ? l.is_active === false : l.is_active !== false);
 
+  // Record a signed lbs movement to the roastery ledger (alongside the existing
+  // lot lbs cache update). bucket is 'on_hand' or 'warehoused'.
+  const recordLotMovement = (lot, bucket, lbsDelta, sourceType, movementDate, sourceId) => {
+    if (!lbsDelta) return Promise.resolve(null);
+    return roastery.entities.InventoryMovement.create({
+      company_id: companyId,
+      inventory_lot_id: lot.id,
+      green_coffee_id: lot.green_coffee_id || null,
+      warehouse_location_id: lot.warehouse_location_id || null,
+      movement_date: movementDate || new Date().toISOString().split('T')[0],
+      bucket,
+      lbs_delta: lbsDelta,
+      green_cost_per_lb: parseFloat(lot.green_cost_per_lb) || 0,
+      landed_cost_per_lb: parseFloat(lot.landed_cost_per_lb || lot.green_cost_per_lb) || 0,
+      source_type: sourceType,
+      source_id: sourceId || lot.id,
+    });
+  };
+
   const handleAdjust = async () => {
     const lot = adjustDialog;
     const adj = parseFloat(adjustForm.lbs_adjusted);
@@ -96,6 +115,7 @@ export default function Inventory() {
       reason: adjustForm.reason,
       adjustment_date: new Date().toISOString().split('T')[0],
     });
+    await recordLotMovement(lot, adjustForm.location, Math.max(0, after) - before, 'adjustment');
     toast.success('Inventory adjusted');
     setAdjustDialog(null);
     setAdjustForm({ lbs_adjusted: '', actual_weight: '', location: 'on_hand', reason: '' });
@@ -107,10 +127,15 @@ export default function Inventory() {
     const bags = parseFloat(lot.number_of_bags) || 0;
     const bagSizeKg = lot.bag_size_kg === 'custom' ? (parseFloat(lot.custom_bag_size_kg) || 0) : (parseFloat(lot.bag_size_kg) || 0);
     const calcedLbs = bagSizeKg > 0 ? kgToLbs(bags * bagSizeKg) : null;
+    const newOnHand = calcedLbs !== null ? calcedLbs : (parseFloat(lot.lbs_on_hand) || 0);
+    const newWarehoused = parseFloat(lot.lbs_warehoused) || 0;
+    // Capture pre-edit lbs so direct lbs changes get recorded to the ledger.
+    const oldLot = await roastery.entities.InventoryLot.filter({ company_id: companyId })
+      .then(ls => ls.find(l => l.id === lot.id));
     await roastery.entities.InventoryLot.update(lot.id, {
       green_coffee_id: lot.green_coffee_id,
-      lbs_on_hand: calcedLbs !== null ? calcedLbs : (parseFloat(lot.lbs_on_hand) || 0),
-      lbs_warehoused: parseFloat(lot.lbs_warehoused) || 0,
+      lbs_on_hand: newOnHand,
+      lbs_warehoused: newWarehoused,
       green_cost_per_lb: parseFloat(lot.green_cost_per_lb) || 0,
       landed_cost_per_lb: parseFloat(lot.landed_cost_per_lb || lot.green_cost_per_lb) || 0,
       number_of_bags: bags,
@@ -119,6 +144,8 @@ export default function Inventory() {
       arrival_date: lot.arrival_date || null,
       notes: lot.notes || '',
     });
+    await recordLotMovement(lot, 'on_hand', newOnHand - (oldLot?.lbs_on_hand || 0), 'adjustment');
+    await recordLotMovement(lot, 'warehoused', newWarehoused - (oldLot?.lbs_warehoused || 0), 'adjustment');
     toast.success('Lot updated');
     setEditLotDialog(null);
     loadData();
@@ -159,6 +186,9 @@ export default function Inventory() {
       reason: fromWarehouse ? 'Transfer: warehouse → roastery' : 'Transfer: roastery → warehouse',
       adjustment_date: new Date().toISOString().split('T')[0],
     });
+    // Two ledger movements: out of one bucket, into the other.
+    await recordLotMovement(lot, fromWarehouse ? 'warehoused' : 'on_hand', -moved, 'transfer_warehouse');
+    await recordLotMovement(lot, fromWarehouse ? 'on_hand' : 'warehoused', moved, 'transfer_warehouse');
     toast.success(`Transferred ${formatLbs(moved)} ${fromWarehouse ? 'to On Hand' : 'to Warehouse'}`);
     setTransferDialog(null);
     setTransferForm({ lbs: '', direction: 'warehouse_to_hand' });
@@ -180,7 +210,7 @@ export default function Inventory() {
     const selectedWarehouse = warehouses.find(w => w.id === newLot.warehouse_location_id);
     const isOffSite = selectedWarehouse?.location_type === 'off_site';
 
-    await roastery.entities.InventoryLot.create({
+    const createdLot = await roastery.entities.InventoryLot.create({
       company_id: companyId,
       green_coffee_id: newLot.green_coffee_id,
       warehouse_location_id: newLot.warehouse_location_id || null,
@@ -192,6 +222,9 @@ export default function Inventory() {
       bag_size_kg: bagSizeKg || null,
       is_active: true,
     });
+    if (totalLbs) {
+      await recordLotMovement(createdLot, isOffSite ? 'warehoused' : 'on_hand', totalLbs, 'receipt');
+    }
     toast.success('Lot added');
     setAddLotDialog(false);
     setNewLot({ green_coffee_id: '', lbs_on_hand: '', lbs_warehoused: '', green_cost_per_lb: '', warehouse_location_id: '', number_of_bags: '', bag_size_kg: '', custom_bag_size_kg: '' });
