@@ -17,11 +17,13 @@ import ResetPassword from "@/pages/ResetPassword";
 
 import RoleRouter from "@/pages/RoleRouter";
 import EmployeeLayout from "@/components/layout/EmployeeLayout";
+import EmployeeDashboard from "@/pages/EmployeeDashboard";
 import EmployeeHome from "@/pages/EmployeeHome";
 import ChecklistDetail from "@/pages/ChecklistDetail";
 import NewChecklist from "@/pages/NewChecklist";
 import EmployeeSettings from "@/pages/EmployeeSettings";
 import EmployeeDirectory from "@/pages/EmployeeDirectory";
+import MyTodosPage from "@/pages/MyTodosPage";
 
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import OperationsHome from "@/pages/OperationsHome";
@@ -35,6 +37,7 @@ import SpreadsheetImport from "@/pages/SpreadsheetImport";
 import ChecklistSetup from "@/pages/ChecklistSetup";
 import DepositReports from "@/pages/DepositReports";
 import KnowledgeBase from "@/pages/KnowledgeBase";
+import DashboardTodos from "@/pages/DashboardTodos";
 import EmployeeKnowledgeBase from "@/pages/EmployeeKnowledgeBasePage";
 import Forum from "@/pages/Forum";
 import Chat from "@/pages/Chat";
@@ -129,7 +132,9 @@ const AuthenticatedApp = () => {
 
         {/* Employee Routes */}
         <Route element={<EmployeeLayout />}>
-          <Route path="/home" element={<EmployeeHome />} />
+          <Route path="/home" element={<EmployeeDashboard />} />
+          <Route path="/checklists" element={<EmployeeHome />} />
+          <Route path="/my-todos" element={<MyTodosPage />} />
           <Route path="/checklist/:instanceId" element={<ChecklistDetail />} />
           <Route path="/checklist/new/:checklistId" element={<NewChecklist />} />
           <Route path="/settings" element={<EmployeeSettings />} />
@@ -152,6 +157,7 @@ const AuthenticatedApp = () => {
           <Route path="/dashboard/import" element={<SpreadsheetImport />} />
           <Route path="/dashboard/checklists/setup" element={<ChecklistSetup />} />
           <Route path="/dashboard/deposits" element={<DepositReports />} />
+          <Route path="/dashboard/todos" element={<DashboardTodos />} />
           <Route path="/dashboard/knowledge-base" element={<KnowledgeBase />} />
           <Route path="/dashboard/forum" element={<Forum />} />
           <Route path="/dashboard/chat" element={<Chat />} />
