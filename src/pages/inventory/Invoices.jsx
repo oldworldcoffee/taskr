@@ -251,6 +251,15 @@ function shouldSuggestPurchaseOption(row, item) {
   return Boolean(firstLineCode(row) || row.item_name);
 }
 
+// Mirrors the backend fee detection: fee lines stay on the invoice for the
+// record but are never matched, received as stock, or used in costing.
+const FEE_LINE_PATTERN = /\b(fuel|freight|shipping|surcharge|handling)\b|\b(delivery|service|truck|energy|environmental)\s*(charge|fee)s?\b|\bbottle\s*deposit\b/i;
+
+function autoDetectFeeLine(row) {
+  if (row.fee_user_set) return Boolean(row.is_fee);
+  return row.is_fee === true || FEE_LINE_PATTERN.test(String(row.item_name || ''));
+}
+
 function normalizeInvoiceUom(value) {
   const text = String(value || '').trim();
   const normalized = text.toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -450,6 +459,7 @@ export default function Invoices() {
       if (!item) {
         return {
           ...row,
+          is_fee: autoDetectFeeLine(row),
           purchase_option_missing: false,
           purchase_option_matched: false,
         };
@@ -463,6 +473,7 @@ export default function Invoices() {
       const nextRow = {
         ...row,
         matched: true,
+        is_fee: false,
         is_pool_draw: row.pool_draw_user_set ? Boolean(row.is_pool_draw) : autoPoolDraw,
         purchase_option_vendor_id: matchedOption?.vendor_id || row.purchase_option_vendor_id || null,
         purchase_option_vendor_name: matchedOption?.vendor_name || row.purchase_option_vendor_name || '',
@@ -590,6 +601,18 @@ export default function Invoices() {
   const handleFileUpload = async (file) => {
     if (!file || !selectedLoc) return;
 
+    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+    if (!isPdf && !String(file.type || '').startsWith('image/')) {
+      setUploadError('Unsupported file type. Upload an invoice image or PDF.');
+      resetFileInput();
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      setUploadError('File is too large (max 15 MB). Try a smaller scan or photo.');
+      resetFileInput();
+      return;
+    }
+
     const locationId = selectedLoc;
     setUploadError('');
     toast.info('Invoice upload started. You can leave this page and come back.');
@@ -662,6 +685,12 @@ export default function Invoices() {
       const its = [...prev.extracted_items];
       const numericFields = new Set(['quantity', 'unit_cost', 'total_cost']);
       its[idx] = { ...its[idx], [field]: numericFields.has(field) ? (parseFloat(val) || 0) : val };
+      if (field === 'item_id' && val) {
+        its[idx].is_fee = false;
+      }
+      if (field === 'item_name' && !its[idx].item_id) {
+        its[idx].is_fee = autoDetectFeeLine(its[idx]);
+      }
       if (field === 'item_id' || field === 'unit_cost') {
         const row = its[idx];
         if (!row.pool_draw_user_set && !row.pool_purchase) {
@@ -780,6 +809,16 @@ export default function Invoices() {
     } catch (error) {
       toast.error(error.message || 'Failed to open invoice for manual review');
     }
+  };
+
+  const toggleFeeLine = (idx) => {
+    setReviewDialog(prev => {
+      if (!prev) return prev;
+      const its = [...(prev.extracted_items || [])];
+      if (!its[idx]) return prev;
+      its[idx] = { ...its[idx], is_fee: !its[idx].is_fee, fee_user_set: true };
+      return { ...prev, extracted_items: its };
+    });
   };
 
   const togglePoolDraw = (idx) => {
@@ -1047,7 +1086,7 @@ export default function Invoices() {
       return;
     }
 
-    const unmatchedCount = (reviewDialog.extracted_items || []).filter(row => !row.item_id).length;
+    const unmatchedCount = (reviewDialog.extracted_items || []).filter(row => !row.item_id && !row.is_fee).length;
     if (unmatchedCount > 0) {
       toast.error('Match, add, or remove unmatched lines before confirming.');
       return;
@@ -1057,11 +1096,19 @@ export default function Invoices() {
     try {
       const patch = invoicePatchFromReview('confirmed');
       await base44.entities.Invoice.update(reviewDialog.id, patch);
-      // Update stock levels for matched items (pool purchases stay at the vendor)
+      // Update stock levels for matched items (pool purchases stay at the vendor).
+      // Pool-draw lines receive the case-converted base quantity so stock matches
+      // what the pool drawdown records (cases × pack size from the purchase option).
       for (const row of patch.extracted_items) {
-        if (!row.item_id || row.pool_purchase) continue;
+        if (!row.item_id || row.pool_purchase || row.is_fee) continue;
+        let receiveQty = row.quantity || 0;
+        if (row.is_pool_draw) {
+          const item = items.find(i => i.id === row.item_id);
+          const matchedOption = item ? (item.purchase_options || []).find((option) => purchaseOptionMatchesLine(option, row)) : null;
+          receiveQty = lineBaseQuantity(row, item || {}, matchedOption);
+        }
         const li = locInv.find(l => l.location_id === patch.location_id && l.item_id === row.item_id);
-        const newQty = (li?.on_hand_quantity || 0) + (row.quantity || 0);
+        const newQty = (li?.on_hand_quantity || 0) + receiveQty;
         if (li) await base44.entities.LocationInventory.update(li.id, { ...li, on_hand_quantity: newQty });
         else await base44.entities.LocationInventory.create({ location_id: patch.location_id, item_id: row.item_id, on_hand_quantity: newQty, par_level: 0, reorder_point: 0 });
       }
@@ -1140,7 +1187,8 @@ export default function Invoices() {
   const pendingCount = invoices.filter(i => i.status === 'pending_review').length;
   const scanBusy = uploading || extracting;
   const lineItemCount = reviewDialog?.extracted_items?.length || 0;
-  const unmatchedLineCount = (reviewDialog?.extracted_items || []).filter(row => !row.item_id).length;
+  const unmatchedLineCount = (reviewDialog?.extracted_items || []).filter(row => !row.item_id && !row.is_fee).length;
+  const feeLineCount = (reviewDialog?.extracted_items || []).filter(row => row.is_fee).length;
   const purchaseOptionSuggestionCount = (reviewDialog?.extracted_items || []).filter(row => row.item_id && row.purchase_option_missing).length;
   const poolDrawCount = (reviewDialog?.extracted_items || []).filter(row => row.item_id && row.is_pool_draw && !row.pool_purchase).length;
   const poolPurchaseCount = (reviewDialog?.extracted_items || []).filter(row => row.pool_purchase).length;
@@ -1304,7 +1352,7 @@ export default function Invoices() {
               </select>
             </div>
 
-            <input type="file" ref={fileRef} accept="image/*" capture="environment" className="hidden" onChange={e => handleFileUpload(e.target.files?.[0])} />
+            <input type="file" ref={fileRef} accept="image/*,application/pdf,.pdf" capture="environment" className="hidden" onChange={e => handleFileUpload(e.target.files?.[0])} />
 
             <div className="border-2 border-dashed border-border rounded-xl p-8 flex flex-col items-center gap-3 text-center">
               {uploading && <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />}
@@ -1317,7 +1365,7 @@ export default function Invoices() {
               {!uploading && !extracting && (
                 <>
                   <Camera className="w-8 h-8 text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">Take a photo or upload an invoice image</p>
+                  <p className="text-sm text-muted-foreground">Take a photo or upload an invoice image or PDF</p>
                   <div className="flex gap-2">
                     <Button variant="outline" size="sm" onClick={() => openFilePicker(true)} disabled={!selectedLoc}>
                       <Camera className="w-4 h-4 mr-1" />Camera
@@ -1367,7 +1415,13 @@ export default function Invoices() {
               {poolDrawCount > 0 && (
                 <div className="bg-violet-50 border border-violet-200 rounded-lg p-3 text-sm text-violet-700 flex items-center gap-2">
                   <Layers className="w-4 h-4 flex-shrink-0" />
-                  {poolDrawCount} line{poolDrawCount > 1 ? 's' : ''} will draw from prepaid pools at the locked cost. Stock is received as usual and no purchase option is created from these lines.
+                  {poolDrawCount} line{poolDrawCount > 1 ? 's' : ''} will draw from prepaid pools at the locked cost. Case quantities are converted using the purchase option pack size — stock and the pool drawdown both use the converted amount. No purchase option is created from these lines.
+                </div>
+              )}
+              {feeLineCount > 0 && (
+                <div className="bg-gray-100 border border-gray-200 rounded-lg p-3 text-sm text-gray-600 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  {feeLineCount} fee line{feeLineCount > 1 ? 's' : ''} (fuel, delivery, etc.) will stay on this invoice for the record but won&apos;t receive stock or affect item costs.
                 </div>
               )}
               {poolPurchaseCount > 0 && (
@@ -1445,7 +1499,7 @@ export default function Invoices() {
 
               {reviewDialog.image_url && (
                 <div>
-                  <a href={reviewDialog.image_url} target="_blank" rel="noopener noreferrer" className="text-sm text-primary underline">View Original Image</a>
+                  <a href={reviewDialog.image_url} target="_blank" rel="noopener noreferrer" className="text-sm text-primary underline">View Original Invoice</a>
                 </div>
               )}
 
@@ -1483,7 +1537,12 @@ export default function Invoices() {
                                   {[firstLineCode(row) ? `Item # ${firstLineCode(row)}` : '', row.pack_size].filter(Boolean).join(' · ')}
                                 </p>
                               )}
-                              {!row.item_id && (
+                              {!row.item_id && row.is_fee && (
+                                <span className="inline-flex items-center rounded-full bg-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600">
+                                  Fee — record only
+                                </span>
+                              )}
+                              {!row.item_id && !row.is_fee && (
                                 <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
                                   New or unmatched
                                 </span>
@@ -1544,9 +1603,19 @@ export default function Invoices() {
                           <td className="px-3 py-2 text-xs font-medium">${(row.total_cost || ((row.quantity || 0) * (row.unit_cost || 0))).toFixed(2)}</td>
                           <td className="px-3 py-2">
                             <div className="flex items-center gap-1">
-                              {!row.item_id && (
+                              {!row.item_id && !row.is_fee && (
                                 <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => openQuickAdd(idx)}>
                                   <Plus className="w-3.5 h-3.5 mr-1" />Add Item
+                                </Button>
+                              )}
+                              {!row.item_id && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className={`h-7 text-xs ${row.is_fee ? 'border-gray-400 text-gray-600' : ''}`}
+                                  onClick={() => toggleFeeLine(idx)}
+                                >
+                                  {row.is_fee ? 'Fee: On' : 'Mark as Fee'}
                                 </Button>
                               )}
                               {row.item_id && row.purchase_option_missing && (

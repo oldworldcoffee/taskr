@@ -221,13 +221,18 @@ function fallbackItemUnitCost(item) {
   const packsPerCase = toNumber(preferred?.packs_per_case || item.packs_per_case);
   let costPerPackUom = null;
 
+  // A cost whose ordering UOM already matches the pack/item UOM is per-unit;
+  // the pack-size fallbacks below must not divide it by the pack quantity.
+  const costIsPerUnit = normalizeUom(orderingUom) === normalizeUom(packUom)
+    || normalizeUom(orderingUom) === normalizeUom(itemUom);
+
   if (String(orderingUom || '').toLowerCase() === 'case' && packsPerCase > 0 && packUnits > 0) {
     costPerPackUom = cost / (packUnits * packsPerCase);
   } else if (packName && orderingUom === packName && packUnits > 0) {
     costPerPackUom = cost / packUnits;
-  } else if (packUnits > 1 && packsPerCase > 0) {
+  } else if (!costIsPerUnit && packUnits > 1 && packsPerCase > 0) {
     costPerPackUom = cost / (packUnits * packsPerCase);
-  } else if (packUnits > 1) {
+  } else if (!costIsPerUnit && packUnits > 1) {
     costPerPackUom = cost / packUnits;
   }
 

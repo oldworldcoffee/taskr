@@ -6,19 +6,25 @@ import PageHeader from '@/components/roastery/PageHeader';
 import StatCard from '@/components/roastery/StatCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Package, DollarSign, Clock } from 'lucide-react';
+import { Package, DollarSign, Clock, Camera } from 'lucide-react';
 import { format, parseISO, isAfter, startOfDay } from 'date-fns';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Button } from '@/components/ui/button';
+import { toast } from 'sonner';
 
 export default function Reports() {
-  const { companyId } = useCompany();
+  const { companyId, isManager } = useCompany();
   const [lots, setLots] = useState([]);
   const [coffees, setCoffees] = useState([]);
   const [adjustments, setAdjustments] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [snapshotDate, setSnapshotDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [storedSnapshots, setStoredSnapshots] = useState([]);
+  const [recording, setRecording] = useState(false);
+
+  const isToday = snapshotDate === format(new Date(), 'yyyy-MM-dd');
 
   useEffect(() => { if (companyId) loadData(); }, [companyId]);
 
@@ -26,7 +32,8 @@ export default function Reports() {
     setLoading(true);
     const [lotsData, coffeeData, adjData, invoiceData] = await Promise.all([
       roastery.entities.InventoryLot.filter({ company_id: companyId, is_active: true }),
-      roastery.entities.GreenCoffee.filter({ company_id: companyId, is_active: true }),
+      // All coffees (including archived) so historical snapshots resolve names
+      roastery.entities.GreenCoffee.filter({ company_id: companyId }),
       roastery.entities.InventoryAdjustment.filter({ company_id: companyId }, '-created_date', 500),
       roastery.entities.Invoice.filter({ company_id: companyId }),
     ]);
@@ -37,19 +44,52 @@ export default function Reports() {
     setLoading(false);
   };
 
+  // Recorded day-end snapshots for the selected past date
+  useEffect(() => {
+    if (!companyId || isToday) {
+      setStoredSnapshots([]);
+      return;
+    }
+    let cancelled = false;
+    roastery.entities.InventorySnapshot
+      .filter({ company_id: companyId, snapshot_date: snapshotDate })
+      .then(rows => { if (!cancelled) setStoredSnapshots(rows); })
+      .catch(() => { if (!cancelled) setStoredSnapshots([]); });
+    return () => { cancelled = true; };
+  }, [companyId, snapshotDate, isToday]);
+
+  const handleRecordSnapshot = async () => {
+    setRecording(true);
+    try {
+      const result = await roastery.functions.invoke('roasteryCreateDailySnapshot');
+      toast.success(result.created > 0
+        ? `Recorded day-end snapshot for ${result.created} lot${result.created === 1 ? '' : 's'}`
+        : 'Yesterday’s snapshot is already recorded');
+      if (!isToday) {
+        const rows = await roastery.entities.InventorySnapshot
+          .filter({ company_id: companyId, snapshot_date: snapshotDate });
+        setStoredSnapshots(rows);
+      }
+    } catch (error) {
+      toast.error(error.message || 'Snapshot failed');
+    }
+    setRecording(false);
+  };
+
   const coffeeMap = Object.fromEntries(coffees.map(c => [c.id, c]));
   const lotMap = Object.fromEntries(lots.map(l => [l.id, l]));
 
   // ── Point-in-time snapshot ────────────────────────────────────────────────
-  // Walk backwards from current lot values, undoing any adjustments made AFTER the selected date.
-  const snapshot = useMemo(() => {
-    const cutoff = startOfDay(parseISO(snapshotDate));
-    const today = startOfDay(new Date());
-    const isToday = cutoff.getTime() === today.getTime();
+  // Today: live lot values. Past date with a recorded day-end snapshot: use the
+  // retained rows. Past date without one: estimate by walking adjustments
+  // backwards from current lot values.
+  const snapshotSource = isToday ? 'live' : (storedSnapshots.length > 0 ? 'recorded' : 'estimated');
 
+  const snapshot = useMemo(() => {
     if (isToday) {
       // No calculation needed — use current lot values
       return lots.map(l => ({
+        key: l.id,
         lot: l,
         coffee: coffeeMap[l.green_coffee_id],
         lbs_on_hand: l.lbs_on_hand || 0,
@@ -58,6 +98,18 @@ export default function Reports() {
       }));
     }
 
+    if (storedSnapshots.length > 0) {
+      return storedSnapshots.map(s => ({
+        key: s.id,
+        lot: lotMap[s.inventory_lot_id],
+        coffee: coffeeMap[s.green_coffee_id],
+        lbs_on_hand: s.lbs_on_hand || 0,
+        lbs_warehoused: s.lbs_warehoused || 0,
+        value: ((s.lbs_on_hand || 0) + (s.lbs_warehoused || 0)) * (s.landed_cost_per_lb || 0),
+      })).filter(r => r.lbs_on_hand + r.lbs_warehoused > 0);
+    }
+
+    const cutoff = startOfDay(parseISO(snapshotDate));
     // For each lot, start from current values and subtract adjustments made AFTER cutoff
     return lots.map(l => {
       const lotAdjs = adjustments.filter(a =>
@@ -68,6 +120,7 @@ export default function Reports() {
       // We don't know split between on_hand / warehoused historically, so apply delta to on_hand
       const historicLbs = Math.max(0, (l.lbs_on_hand || 0) + (l.lbs_warehoused || 0) - lbsDelta);
       return {
+        key: l.id,
         lot: l,
         coffee: coffeeMap[l.green_coffee_id],
         lbs_on_hand: historicLbs,
@@ -75,7 +128,7 @@ export default function Reports() {
         value: historicLbs * (l.landed_cost_per_lb || 0),
       };
     }).filter(r => r.lbs_on_hand > 0);
-  }, [lots, adjustments, coffeeMap, snapshotDate]);
+  }, [lots, adjustments, coffeeMap, lotMap, snapshotDate, storedSnapshots, isToday]);
 
   const snapshotTotalLbs = snapshot.reduce((s, r) => s + r.lbs_on_hand + r.lbs_warehoused, 0);
   const snapshotTotalValue = snapshot.reduce((s, r) => s + r.value, 0);
@@ -99,19 +152,25 @@ export default function Reports() {
   const weeklyUsageRate = dailyUsageRate * 7;
 
   // Runout dates (always based on snapshot lbs, usage rate from last 30 days)
-  const lotsWithRunout = snapshot.map(({ lot, coffee, lbs_on_hand, lbs_warehoused, value }) => {
+  const lotsWithRunout = snapshot.map(({ key, lot, coffee, lbs_on_hand, lbs_warehoused, value }) => {
     const totalLbs = lbs_on_hand + lbs_warehoused;
-    const lotUsage = recentUsage.filter(a => a.inventory_lot_id === lot.id);
+    const lotUsage = recentUsage.filter(a => a.inventory_lot_id === lot?.id);
     const lotDailyUsage = Math.abs(lotUsage.reduce((s, a) => s + (a.lbs_adjusted || 0), 0)) / 30;
     const daysRemaining = lotDailyUsage > 0 ? Math.round(totalLbs / lotDailyUsage) : null;
-    return { lot, coffee, totalLbs, value, daysRemaining };
+    return { key, coffee, lbs_on_hand, lbs_warehoused, totalLbs, value, daysRemaining };
   }).filter(r => r.totalLbs > 0);
 
   if (loading) return <div className="p-8 flex justify-center"><div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>;
 
   return (
     <div className="p-8">
-      <PageHeader title="Reports" description="Point-in-time inventory value and on-hand lbs by date" />
+      <PageHeader title="Reports" description="Point-in-time inventory value and on-hand lbs by date">
+        {isManager && (
+          <Button variant="outline" onClick={handleRecordSnapshot} disabled={recording} className="gap-2">
+            <Camera className="w-4 h-4" /> {recording ? 'Recording…' : 'Record day-end snapshot'}
+          </Button>
+        )}
+      </PageHeader>
 
       {/* Date selector + snapshot stat cards */}
       <div className="flex items-center gap-3 mb-5">
@@ -123,13 +182,23 @@ export default function Reports() {
           max={format(new Date(), 'yyyy-MM-dd')}
           onChange={e => setSnapshotDate(e.target.value)}
         />
-        {snapshotDate !== format(new Date(), 'yyyy-MM-dd') && (
+        {!isToday && (
           <button
             className="text-xs text-muted-foreground underline"
             onClick={() => setSnapshotDate(format(new Date(), 'yyyy-MM-dd'))}
           >
             Reset to today
           </button>
+        )}
+        {snapshotSource === 'recorded' && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800 font-medium">
+            Recorded day-end snapshot
+          </span>
+        )}
+        {snapshotSource === 'estimated' && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 font-medium">
+            Estimated from adjustment history — no snapshot recorded for this date
+          </span>
         )}
       </div>
 
@@ -236,11 +305,11 @@ export default function Reports() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {lotsWithRunout.map(({ lot, coffee, totalLbs, value, daysRemaining }) => (
-                <tr key={lot.id} className="hover:bg-muted/30">
+              {lotsWithRunout.map(({ key, coffee, lbs_on_hand, lbs_warehoused, totalLbs, value, daysRemaining }) => (
+                <tr key={key} className="hover:bg-muted/30">
                   <td className="py-2.5 font-medium">{coffee?.name || 'Unknown'}</td>
-                  <td className="py-2.5 text-right">{formatLbs(lot.lbs_on_hand)}</td>
-                  <td className="py-2.5 text-right">{formatLbs(lot.lbs_warehoused)}</td>
+                  <td className="py-2.5 text-right">{formatLbs(lbs_on_hand)}</td>
+                  <td className="py-2.5 text-right">{formatLbs(lbs_warehoused)}</td>
                   <td className="py-2.5 text-right">{formatLbs(totalLbs)}</td>
                   <td className="py-2.5 text-right">{formatCurrency(value)}</td>
                   <td className="py-2.5 text-right">
