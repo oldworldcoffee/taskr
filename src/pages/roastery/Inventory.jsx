@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { roastery } from '@/api/roastery';
+import { recalculateRoasterySnapshots } from '@/lib/roasteryLedger';
 import { useCompany } from '@/components/roastery/RoasteryContext';
 import { formatCurrency, formatLbs } from '@/lib/roasteryPricingUtils';
 import PageHeader from '@/components/roastery/PageHeader';
@@ -30,7 +31,7 @@ export default function Inventory() {
   const [loading, setLoading] = useState(true);
   const [adjustDialog, setAdjustDialog] = useState(null);
   const [addLotDialog, setAddLotDialog] = useState(false);
-  const [adjustForm, setAdjustForm] = useState({ lbs_adjusted: '', actual_weight: '', location: 'on_hand', reason: '' });
+  const [adjustForm, setAdjustForm] = useState({ lbs_adjusted: '', actual_weight: '', location: 'on_hand', reason: '', effective_date: new Date().toISOString().split('T')[0] });
   const [newLot, setNewLot] = useState({ green_coffee_id: '', lbs_on_hand: '', lbs_warehoused: '', green_cost_per_lb: '', warehouse_location_id: '', number_of_bags: '', bag_size_kg: '', custom_bag_size_kg: '' });
   const [editLotDialog, setEditLotDialog] = useState(null);
   const [transferDialog, setTransferDialog] = useState(null);
@@ -102,6 +103,8 @@ export default function Inventory() {
       ? { lbs_on_hand: Math.max(0, after) }
       : { lbs_warehoused: Math.max(0, after) };
 
+    const today = new Date().toISOString().split('T')[0];
+    const effectiveDate = adjustForm.effective_date || today;
     await roastery.entities.InventoryLot.update(lot.id, update);
     await roastery.entities.InventoryAdjustment.create({
       company_id: companyId,
@@ -113,12 +116,20 @@ export default function Inventory() {
       lbs_after: Math.max(0, after),
       location: adjustForm.location,
       reason: adjustForm.reason,
-      adjustment_date: new Date().toISOString().split('T')[0],
+      adjustment_date: effectiveDate,
     });
-    await recordLotMovement(lot, adjustForm.location, Math.max(0, after) - before, 'adjustment');
+    await recordLotMovement(lot, adjustForm.location, Math.max(0, after) - before, 'adjustment', effectiveDate);
+    // Backdated adjustment: recompute roastery snapshots from the effective date.
+    if (effectiveDate < today) {
+      try {
+        await recalculateRoasterySnapshots({ companyId, fromDate: effectiveDate, lotIds: [lot.id], reason: 'backdated_roastery_adjustment', sourceId: lot.id });
+      } catch (error) {
+        console.error('Roastery snapshot recalc failed:', error);
+      }
+    }
     toast.success('Inventory adjusted');
     setAdjustDialog(null);
-    setAdjustForm({ lbs_adjusted: '', actual_weight: '', location: 'on_hand', reason: '' });
+    setAdjustForm({ lbs_adjusted: '', actual_weight: '', location: 'on_hand', reason: '', effective_date: today });
     loadData();
   };
 
@@ -461,6 +472,16 @@ export default function Inventory() {
             <div>
               <Label>Reason</Label>
               <Textarea value={adjustForm.reason} onChange={e=>setAdjustForm(f=>({...f,reason:e.target.value}))} placeholder="Physical count, transfer, etc." rows={2} />
+            </div>
+            <div>
+              <Label>Effective Date</Label>
+              <Input
+                type="date"
+                value={adjustForm.effective_date}
+                max={new Date().toISOString().split('T')[0]}
+                onChange={e => setAdjustForm(f => ({ ...f, effective_date: e.target.value || new Date().toISOString().split('T')[0] }))}
+              />
+              <p className="text-xs text-muted-foreground mt-1">Backdating recalculates roastery history.</p>
             </div>
           </div>
           <DialogFooter>
