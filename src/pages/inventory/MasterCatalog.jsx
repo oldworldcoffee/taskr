@@ -676,12 +676,17 @@ export default function MasterCatalog() {
     const packsPerCase = parseFloat(opt?.packs_per_case || 0);
     const packName = opt?.inner_pack_name || '';
 
+    // A cost whose ordering UOM already matches the pack/item UOM is per-unit;
+    // the pack-size fallback below must not divide it by the case quantity.
+    const costIsPerUnit = normalizeUom(orderingUOM) === normalizeUom(packUOM)
+      || normalizeUom(orderingUOM) === normalizeUom(itemUOM);
+
     let pricePerPackUnit;
     if (orderingUOM === 'Case' && innerUnits > 0 && packsPerCase > 0) {
       pricePerPackUnit = cost / (innerUnits * packsPerCase);
     } else if (packName && orderingUOM === packName && innerUnits > 0) {
       pricePerPackUnit = cost / innerUnits;
-    } else if (innerUnits > 0 && packsPerCase > 0) {
+    } else if (!costIsPerUnit && innerUnits > 0 && packsPerCase > 0) {
       pricePerPackUnit = cost / (innerUnits * packsPerCase);
     } else {
       pricePerPackUnit = null;

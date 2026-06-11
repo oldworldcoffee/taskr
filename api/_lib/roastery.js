@@ -1,6 +1,12 @@
 import { httpError } from './taskr.js';
+import {
+  DEFAULT_SNAPSHOT_TIMEZONE,
+  SNAPSHOT_CATCHUP_WINDOW_HOURS,
+  previousLocalDate,
+  zonedDateParts,
+} from './inventory.js';
 
-const ROASTERY_FUNCTIONS = new Set(['roasteryExtractInvoice']);
+const ROASTERY_FUNCTIONS = new Set(['roasteryExtractInvoice', 'roasteryCreateDailySnapshot']);
 
 export function isRoasteryFunction(name) {
   return ROASTERY_FUNCTIONS.has(name);
@@ -208,10 +214,102 @@ async function roasteryExtractInvoice(client, user, body) {
   };
 }
 
+// Records a day-end snapshot row per active lot for the previous local day
+// (mirrors inventory's snapshotCompanyLocations). Lots are company-wide, so
+// the company's first active location timezone decides the day boundary.
+async function snapshotRoasteryCompany(client, companyId, { onlyDuringCatchupWindow = false, now = new Date() } = {}) {
+  const { data: locations, error: locationsError } = await client
+    .from('locations')
+    .select('name, timezone, is_active')
+    .eq('company_id', companyId);
+  if (locationsError) throw locationsError;
+  // The day boundary follows the roastery's own location when one exists
+  // (any active location whose name contains "roastery", e.g. "Southtown
+  // Roastery"); otherwise any active location with a timezone.
+  const candidates = (locations || []).filter((row) => row.is_active !== false && row.timezone);
+  const zone = (candidates.find((row) => /roastery/i.test(row.name || '')) || candidates[0])?.timezone
+    || DEFAULT_SNAPSHOT_TIMEZONE;
+  const local = zonedDateParts(now, zone) || zonedDateParts(now, DEFAULT_SNAPSHOT_TIMEZONE);
+  if (onlyDuringCatchupWindow && local.hour >= SNAPSHOT_CATCHUP_WINDOW_HOURS) return 0;
+  const date = previousLocalDate(local.date);
+
+  const { data: lots, error: lotsError } = await client
+    .from('roastery_inventory_lots')
+    .select('*')
+    .eq('company_id', companyId)
+    .neq('is_active', false);
+  if (lotsError) throw lotsError;
+
+  const { data: existingRows, error: existingError } = await client
+    .from('roastery_inventory_snapshots')
+    .select('inventory_lot_id')
+    .eq('company_id', companyId)
+    .eq('snapshot_date', date);
+  if (existingError) throw existingError;
+  const existing = new Set((existingRows || []).map((row) => row.inventory_lot_id));
+
+  const rows = (lots || [])
+    .filter((lot) => !existing.has(lot.id))
+    .map((lot) => ({
+      company_id: companyId,
+      snapshot_date: date,
+      inventory_lot_id: lot.id,
+      green_coffee_id: lot.green_coffee_id || null,
+      warehouse_location_id: lot.warehouse_location_id || null,
+      lbs_on_hand: toNumber(lot.lbs_on_hand, 0),
+      lbs_warehoused: toNumber(lot.lbs_warehoused, 0),
+      green_cost_per_lb: toNumber(lot.green_cost_per_lb, 0),
+      landed_cost_per_lb: toNumber(lot.landed_cost_per_lb ?? lot.green_cost_per_lb, 0),
+    }));
+
+  if (rows.length) {
+    const { error: insertError } = await client.from('roastery_inventory_snapshots').insert(rows);
+    if (insertError) throw insertError;
+  }
+  return rows.length;
+}
+
+async function roasteryCreateDailySnapshot(client, user) {
+  requireRoasteryAccess(user);
+  const created = await snapshotRoasteryCompany(client, user.company_id);
+  return { success: true, created };
+}
+
+export async function runRoasteryDailySnapshots(client) {
+  // Roastery is not feature-flagged, so snapshot every active company that
+  // actually has roastery inventory lots.
+  const { data: lotRows, error: lotsError } = await client
+    .from('roastery_inventory_lots')
+    .select('company_id');
+  if (lotsError) throw lotsError;
+  const companyIds = [...new Set((lotRows || []).map((row) => row.company_id))];
+  if (companyIds.length === 0) return { success: true, results: {} };
+
+  const { data: companies, error: companiesError } = await client
+    .from('companies')
+    .select('id, is_active')
+    .in('id', companyIds);
+  if (companiesError) throw companiesError;
+
+  const results = {};
+  for (const company of (companies || []).filter((row) => row.is_active !== false)) {
+    try {
+      results[company.id] = await snapshotRoasteryCompany(client, company.id, {
+        onlyDuringCatchupWindow: true,
+      });
+    } catch (companyError) {
+      results[company.id] = `error: ${companyError.message}`;
+    }
+  }
+  return { success: true, results };
+}
+
 export async function handleRoasteryFunction(name, req, client, user, body) {
   switch (name) {
     case 'roasteryExtractInvoice':
       return roasteryExtractInvoice(client, user, body);
+    case 'roasteryCreateDailySnapshot':
+      return roasteryCreateDailySnapshot(client, user);
     default:
       throw httpError(404, `Unknown function: ${name}`);
   }

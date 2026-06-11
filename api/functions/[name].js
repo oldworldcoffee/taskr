@@ -22,7 +22,7 @@ import {
   isPublicInventoryFunction,
   runDailySnapshots,
 } from '../_lib/inventory.js';
-import { handleRoasteryFunction, isRoasteryFunction } from '../_lib/roastery.js';
+import { handleRoasteryFunction, isRoasteryFunction, runRoasteryDailySnapshots } from '../_lib/roastery.js';
 
 const CRON_FUNCTION_NAMES = new Set(['inventoryRunDailySnapshots', 'runDailySnapshots']);
 
@@ -756,8 +756,14 @@ export default async function handler(req, res) {
       if (!secret || auth !== `Bearer ${secret}`) {
         return sendJson(res, 401, { error: 'Unauthorized' });
       }
-      const result = await runDailySnapshots(client);
-      return sendJson(res, 200, result);
+      const inventory = await runDailySnapshots(client);
+      let roastery;
+      try {
+        roastery = await runRoasteryDailySnapshots(client);
+      } catch (roasteryError) {
+        roastery = { success: false, error: roasteryError.message };
+      }
+      return sendJson(res, 200, { success: true, inventory, roastery });
     } catch (error) {
       return sendJson(res, error.status || 500, { error: error.message || 'Server error' });
     }

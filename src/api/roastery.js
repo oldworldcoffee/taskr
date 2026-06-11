@@ -8,6 +8,7 @@ const ENTITY_TABLES = {
   Invoice: 'roastery_invoices',
   InventoryLot: 'roastery_inventory_lots',
   InventoryAdjustment: 'roastery_inventory_adjustments',
+  InventorySnapshot: 'roastery_inventory_snapshots',
   CategorySlot: 'roastery_category_slots',
   CategoryRotation: 'roastery_category_rotations',
   BlendComponentRotation: 'roastery_blend_component_rotations',

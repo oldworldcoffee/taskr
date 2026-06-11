@@ -549,6 +549,15 @@ function matchCatalogItem(extracted, catalogItems = []) {
   };
 }
 
+// Fee/surcharge lines (fuel, freight, delivery fees, deposits) are kept on the
+// invoice for the record but never matched to catalog items, received as stock,
+// or used in costing.
+const FEE_LINE_PATTERN = /\b(fuel|freight|shipping|surcharge|handling)\b|\b(delivery|service|truck|energy|environmental)\s*(charge|fee)s?\b|\bbottle\s*deposit\b/i;
+
+function isFeeLineName(name) {
+  return FEE_LINE_PATTERN.test(String(name || ''));
+}
+
 function normalizeExtractedItems(rawItems = [], catalogItems = []) {
   return (Array.isArray(rawItems) ? rawItems : [])
     .map((item) => {
@@ -556,7 +565,9 @@ function normalizeExtractedItems(rawItems = [], catalogItems = []) {
       if (!itemName) return null;
 
       const match = matchCatalogItem(item, catalogItems);
-      const itemId = match?.item_id || null;
+      let itemId = match?.item_id || null;
+      const isFee = item.is_fee === true || (!itemId && isFeeLineName(itemName));
+      if (isFee) itemId = null;
       const quantity = toNumber(item.quantity ?? item.qty ?? item.shipped_quantity ?? item.ordered_quantity, 0);
       const totalCost = toNumber(item.total_cost ?? item.line_total ?? item.extended_price ?? item.extended_cost ?? item.total, 0);
       const unitCost = toNumber(item.unit_cost ?? item.unit_price ?? item.price ?? item.cost, quantity > 0 && totalCost > 0 ? totalCost / quantity : 0);
@@ -565,14 +576,15 @@ function normalizeExtractedItems(rawItems = [], catalogItems = []) {
       return {
         item_name: itemName,
         item_id: itemId,
+        is_fee: isFee,
         vendor_sku: invoiceCodeValues(item)[0] || '',
         pack_size: String(item.pack_size || item.pack || '').trim(),
-        match_type: match?.match_type || null,
-        match_score: match?.match_score || 0,
-        purchase_option_matched: match?.purchase_option_matched === true,
-        purchase_option_missing: match?.purchase_option_missing === true,
-        purchase_option_vendor_id: match?.purchase_option_vendor_id || null,
-        purchase_option_vendor_name: match?.purchase_option_vendor_name || '',
+        match_type: isFee ? null : match?.match_type || null,
+        match_score: isFee ? 0 : match?.match_score || 0,
+        purchase_option_matched: !isFee && match?.purchase_option_matched === true,
+        purchase_option_missing: !isFee && match?.purchase_option_missing === true,
+        purchase_option_vendor_id: isFee ? null : match?.purchase_option_vendor_id || null,
+        purchase_option_vendor_name: isFee ? '' : match?.purchase_option_vendor_name || '',
         quantity,
         unit_cost: unitCost,
         unit_of_measure: unitOfMeasure,
@@ -585,6 +597,7 @@ function normalizeExtractedItems(rawItems = [], catalogItems = []) {
 
 function guessContentType(fileUrl) {
   const clean = String(fileUrl || '').split('?')[0].toLowerCase();
+  if (clean.endsWith('.pdf')) return 'application/pdf';
   if (clean.endsWith('.png')) return 'image/png';
   if (clean.endsWith('.webp')) return 'image/webp';
   if (clean.endsWith('.gif')) return 'image/gif';
@@ -2055,6 +2068,10 @@ async function extractInvoiceImage(client, user, body) {
 
   const model = process.env.OPENAI_INVOICE_MODEL || process.env.OPENAI_VISION_MODEL || 'gpt-4o-mini';
   const imageUrl = await imageUrlToDataUrl(fileUrl, client);
+  const isPdf = imageUrl.startsWith('data:application/pdf');
+  const invoiceContentPart = isPdf
+    ? { type: 'file', file: { filename: 'invoice.pdf', file_data: imageUrl } }
+    : { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } };
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -2078,7 +2095,8 @@ async function extractInvoiceImage(client, user, body) {
             'If a known vendor appears in the supplier/header/remit-to area, vendor_name must be the exact known vendor name from the provided list.',
             'For Chefs Warehouse / Greenleaf invoices, vendor_name should be Chefs Warehouse or The Chefs Warehouse West Coast LLC, not the Old World Coffee or Old World Coffee Roasters customer name.',
             'Extract every product/service row in the invoice line-item table. Do not omit rows just because there is no catalog match.',
-            'For items, return item_name, vendor_sku, item_code, vendor_item_number, product_code, pack_size, quantity, unit_cost, unit_of_measure, total_cost, item_id, and matched.',
+            'For items, return item_name, vendor_sku, item_code, vendor_item_number, product_code, pack_size, quantity, unit_cost, unit_of_measure, total_cost, item_id, matched, and is_fee.',
+            'Set is_fee to true for non-product charge lines such as fuel charges, freight, delivery fees, truck charges, shipping, surcharges, service fees, handling, and bottle deposits. Fee lines must have item_id null and still appear in items.',
             'Put any printed item/catalog/product/SKU/supplier code into vendor_sku when possible, even if the invoice labels it item code, product code, catalog number, or vendor item number.',
             'pack_size must be the exact printed pack-size line when present, such as "12/32 OZ CS" or "160/2 OZ CS"; do not rewrite or summarize it.',
             'A pack size like "160/2 OZ CS" means 160 individual pieces per case, each piece is 2 oz. Do not treat that as 160 oz or 2 cases.',
@@ -2109,13 +2127,10 @@ async function extractInvoiceImage(client, user, body) {
                 'Use known vendors as supplier matches. If the invoice supplier matches a known vendor, return the exact known vendor name as vendor_name.',
                 'If the printed invoice supplier is not in that list, still return the printed supplier.',
                 'If Old World Coffee or Old World Coffee Roasters appears under bill-to, sold-to, ship-to, customer, or delivery fields, do not use it as vendor_name.',
-                'If the invoice has fees like fuel, freight, bottle deposit, or surcharge, include them in total_amount but not as product line items.',
+                'If the invoice has fees like fuel, freight, bottle deposit, or surcharge, include them in total_amount and as line items with is_fee true.',
               ].join('\n'),
             },
-            {
-              type: 'image_url',
-              image_url: { url: imageUrl, detail: 'high' },
-            },
+            invoiceContentPart,
           ],
         },
       ],
@@ -2160,12 +2175,12 @@ async function scrapeProductImage(body) {
   }
 }
 
-const DEFAULT_SNAPSHOT_TIMEZONE = 'UTC';
+export const DEFAULT_SNAPSHOT_TIMEZONE = 'UTC';
 // Local hours 0-5 count as "just after end of day": the hourly cron snapshots
 // yesterday during this window, so a missed midnight run self-heals.
-const SNAPSHOT_CATCHUP_WINDOW_HOURS = 6;
+export const SNAPSHOT_CATCHUP_WINDOW_HOURS = 6;
 
-function zonedDateParts(date, timeZone) {
+export function zonedDateParts(date, timeZone) {
   try {
     const parts = new Intl.DateTimeFormat('en-CA', {
       timeZone,
@@ -2185,7 +2200,7 @@ function zonedDateParts(date, timeZone) {
   }
 }
 
-function previousLocalDate(localDate) {
+export function previousLocalDate(localDate) {
   const [year, month, day] = localDate.split('-').map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
   date.setUTCDate(date.getUTCDate() - 1);
