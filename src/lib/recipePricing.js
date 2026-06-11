@@ -94,6 +94,43 @@ export function convertQuantityForItem(item, quantity, fromUom, toUom) {
   return null;
 }
 
+// Price of a purchase option expressed per the item's base unit of measure,
+// accounting for inner-pack/case packaging and unit conversions. Used to pick
+// the cheapest option by true unit price (e.g. $4.39/Qt beats $2.99/Pt per
+// fl-oz). Returns null when the option can't be converted to the base UOM.
+export function optionPricePerBaseUom(item, option) {
+  const cost = toNumber(option?.unit_cost);
+  if (!cost) return null;
+  const itemUOM = item?.unit_of_measure;
+  const orderingUOM = option?.unit_of_measure || itemUOM;
+  const packUOM = option?.inner_pack_uom || itemUOM;
+  const innerUnits = toNumber(option?.inner_pack_units);
+  const packsPerCase = toNumber(option?.packs_per_case);
+  const packName = option?.inner_pack_name || '';
+  const costIsPerUnit = normalizeUom(orderingUOM) === normalizeUom(packUOM)
+    || normalizeUom(orderingUOM) === normalizeUom(itemUOM);
+
+  let pricePerPackUnit;
+  if (orderingUOM === 'Case' && innerUnits > 0 && packsPerCase > 0) {
+    pricePerPackUnit = cost / (innerUnits * packsPerCase);
+  } else if (packName && orderingUOM === packName && innerUnits > 0) {
+    pricePerPackUnit = cost / innerUnits;
+  } else if (!costIsPerUnit && innerUnits > 0 && packsPerCase > 0) {
+    pricePerPackUnit = cost / (innerUnits * packsPerCase);
+  } else {
+    pricePerPackUnit = null;
+  }
+
+  const perBase = (price, fromUom) => {
+    if (normalizeUom(fromUom) === normalizeUom(itemUOM)) return price;
+    const itemUomPerOne = convertQuantityForItem(item, 1, fromUom, itemUOM);
+    return (itemUomPerOne == null || itemUomPerOne === 0) ? null : price / itemUomPerOne;
+  };
+
+  if (pricePerPackUnit !== null) return perBase(pricePerPackUnit, packUOM);
+  return perBase(cost, orderingUOM);
+}
+
 function convertUnitCostForItem(item, costPerFromUom, fromUom, toUom) {
   const oneToUnitInFromUnits = convertQuantityForItem(item, 1, toUom, fromUom);
   if (oneToUnitInFromUnits == null) return null;

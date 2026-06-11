@@ -14,7 +14,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { CATEGORY_GROUPS, categoryForName, categoryGroupLabel } from '@/lib/inventoryCategories';
-import { normalizeUom } from '@/lib/recipePricing';
+import { normalizeUom, optionPricePerBaseUom } from '@/lib/recipePricing';
 
 const UOM_OPTIONS = ['EA', 'fl-oz', 'ml', 'L', 'Pt', 'Qt', 'gal', 'oz', 'lb', 'g', 'kg'];
 const EMPTY_OPTION = { vendor_id: '', vendor_name: '', product_name: '', product_code: '', unit_cost: '', unit_of_measure: '', inner_pack_uom: '', inner_pack_units: '', inner_pack_name: '', packs_per_case: '', is_preferred: false, notes: '', location_ids: null };
@@ -281,7 +281,22 @@ export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave
 
   const options = form.purchase_options || [];
   const preferredOption = options.find(o => o.is_preferred);
-  const cheapest = options.length > 1 ? options.reduce((a, b) => (parseFloat(a.unit_cost) || 0) < (parseFloat(b.unit_cost) || 0) ? a : b) : null;
+  // Cheapest by true unit price (price per the item's base UOM), not raw pack
+  // price — e.g. $4.39/Qt beats $2.99/Pt per fl-oz. Falls back to raw cost when
+  // an option can't be converted to the base UOM.
+  const comparablePrice = (o) => {
+    const perBase = optionPricePerBaseUom(form, o);
+    return perBase != null ? perBase : (parseFloat(o.unit_cost) || Infinity);
+  };
+  let cheapestIdx = -1;
+  if (options.length > 1) {
+    let best = Infinity;
+    options.forEach((o, i) => {
+      if (!o.unit_cost) return;
+      const v = comparablePrice(o);
+      if (v < best) { best = v; cheapestIdx = i; }
+    });
+  }
 
   const deriveAvailableCountUnits = () => {
     const baseUOM = form.unit_of_measure || 'EA';
@@ -472,7 +487,7 @@ export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave
                   /* Mobile: card list */
                   <div className="space-y-2">
                     {options.map((opt, idx) => {
-                      const isCheapest = cheapest && options.length > 1 && parseFloat(opt.unit_cost) === parseFloat(cheapest.unit_cost);
+                      const isCheapest = idx === cheapestIdx;
                       const isExpanded = expandedOption === idx;
                       return (
                         <div key={idx} className={`border rounded-lg overflow-hidden ${opt.is_preferred ? 'border-primary/40 bg-primary/5' : 'border-border bg-background'}`}>
@@ -520,7 +535,7 @@ export default function ItemEditDialog({ open, onOpenChange, initialForm, onSave
                       </thead>
                       <tbody className="divide-y divide-border">
                         {options.map((opt, idx) => {
-                          const isCheapest = cheapest && options.length > 1 && parseFloat(opt.unit_cost) === parseFloat(cheapest.unit_cost);
+                          const isCheapest = idx === cheapestIdx;
                           const isExpanded = expandedOption === idx;
                           return (
                             <>

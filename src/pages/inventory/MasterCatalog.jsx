@@ -25,7 +25,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { CATEGORY_GROUPS, categoryForItem, categoryGroupLabel, mergeInventoryCategories } from '@/lib/inventoryCategories';
-import { normalizeUom } from '@/lib/recipePricing';
+import { normalizeUom, optionPricePerBaseUom } from '@/lib/recipePricing';
 
 const EMPTY = { name: '', sku: '', category: '', unit_of_measure: '', unit_cost: '', is_commissary_item: false, commissary_price: '', description: '', vendor_id: '', is_active: true, purchase_options: [], product_group_id: null, group_sort_order: 0, each_conversion: null };
 const ITEM_DRAFT_KEY = 'taskr.inventory.catalog.itemDraft';
@@ -664,7 +664,12 @@ export default function MasterCatalog() {
   const getCheapestOption = (item) => {
     const opts = (item.purchase_options || []).filter(o => o.unit_cost);
     if (opts.length < 2) return null;
-    return opts.reduce((a, b) => parseFloat(a.unit_cost) < parseFloat(b.unit_cost) ? a : b);
+    // Compare by true unit price (per the item's base UOM), not raw pack price.
+    const comparable = (o) => {
+      const perBase = optionPricePerBaseUom(item, o);
+      return perBase != null ? perBase : (parseFloat(o.unit_cost) || Infinity);
+    };
+    return opts.reduce((a, b) => comparable(a) <= comparable(b) ? a : b);
   };
 
   const getPricePerUOM = (opt, itemUOM, item) => {
