@@ -267,6 +267,9 @@ export default function MasterCatalog() {
         commissary_price: parseFloat(f.commissary_price) || 0,
         purchase_options: opts.map(o => ({
           ...o,
+          // Re-sync the denormalized vendor_name from the live vendor so a
+          // renamed vendor doesn't leave the snapshot stale.
+          vendor_name: vendors.find(v => v.id === o.vendor_id)?.name || o.vendor_name || '',
           unit_cost: parseFloat(o.unit_cost) || 0,
           inner_pack_units: parseFloat(o.inner_pack_units) || null,
           packs_per_case: parseFloat(o.packs_per_case) || null,

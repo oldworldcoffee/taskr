@@ -748,7 +748,7 @@ Address: ${loc?.address || '—'}</p>
       const toEmail = locSettings?.order_email || vendor.default_order_email || vendor.email;
       const ccEmail = locSettings?.cc_email || vendor.default_cc_email || '';
 
-      await base44.functions.invoke('sendVendorOrderEmail', {
+      const result = await base44.functions.invoke('sendVendorOrderEmail', {
         orderId: emailDialog.order.id,
         toEmail,
         ccEmail: ccEmail || undefined,
@@ -760,7 +760,16 @@ Address: ${loc?.address || '—'}</p>
 
       await load();
       setEmailDialog(null);
-      toast.success('Order email sent!');
+
+      // The backend logs the email even when no email provider is configured
+      // (provider 'local-log'), so a 200 doesn't guarantee delivery. Only claim
+      // it was sent when the provider actually accepted it.
+      const delivered = result?.data?.email?.status === 'sent';
+      if (delivered) {
+        toast.success('Order email sent!');
+      } else {
+        toast.warning('Order recorded, but the email was NOT delivered — email sending isn’t configured for this environment. The vendor did not receive anything.');
+      }
     } catch (error) {
       console.error('Failed to send email:', error);
       toast.error('Failed to send email. Please try again.');
