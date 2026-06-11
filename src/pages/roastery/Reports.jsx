@@ -6,15 +6,13 @@ import PageHeader from '@/components/roastery/PageHeader';
 import StatCard from '@/components/roastery/StatCard';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Package, DollarSign, Clock, Camera } from 'lucide-react';
+import { Package, DollarSign, Clock } from 'lucide-react';
 import { format, parseISO, isAfter, startOfDay } from 'date-fns';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Button } from '@/components/ui/button';
-import { toast } from 'sonner';
 
 export default function Reports() {
-  const { companyId, isManager } = useCompany();
+  const { companyId } = useCompany();
   const [lots, setLots] = useState([]);
   const [coffees, setCoffees] = useState([]);
   const [adjustments, setAdjustments] = useState([]);
@@ -22,7 +20,6 @@ export default function Reports() {
   const [loading, setLoading] = useState(true);
   const [snapshotDate, setSnapshotDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [storedSnapshots, setStoredSnapshots] = useState([]);
-  const [recording, setRecording] = useState(false);
 
   const isToday = snapshotDate === format(new Date(), 'yyyy-MM-dd');
 
@@ -57,24 +54,6 @@ export default function Reports() {
       .catch(() => { if (!cancelled) setStoredSnapshots([]); });
     return () => { cancelled = true; };
   }, [companyId, snapshotDate, isToday]);
-
-  const handleRecordSnapshot = async () => {
-    setRecording(true);
-    try {
-      const result = await roastery.functions.invoke('roasteryCreateDailySnapshot');
-      toast.success(result.created > 0
-        ? `Recorded day-end snapshot for ${result.created} lot${result.created === 1 ? '' : 's'}`
-        : 'Yesterday’s snapshot is already recorded');
-      if (!isToday) {
-        const rows = await roastery.entities.InventorySnapshot
-          .filter({ company_id: companyId, snapshot_date: snapshotDate });
-        setStoredSnapshots(rows);
-      }
-    } catch (error) {
-      toast.error(error.message || 'Snapshot failed');
-    }
-    setRecording(false);
-  };
 
   const coffeeMap = Object.fromEntries(coffees.map(c => [c.id, c]));
   const lotMap = Object.fromEntries(lots.map(l => [l.id, l]));
@@ -164,13 +143,7 @@ export default function Reports() {
 
   return (
     <div className="p-8">
-      <PageHeader title="Reports" description="Point-in-time inventory value and on-hand lbs by date">
-        {isManager && (
-          <Button variant="outline" onClick={handleRecordSnapshot} disabled={recording} className="gap-2">
-            <Camera className="w-4 h-4" /> {recording ? 'Recording…' : 'Record day-end snapshot'}
-          </Button>
-        )}
-      </PageHeader>
+      <PageHeader title="Reports" description="Point-in-time inventory value and on-hand lbs by date" />
 
       {/* Date selector + snapshot stat cards */}
       <div className="flex items-center gap-3 mb-5">
