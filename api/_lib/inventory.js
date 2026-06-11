@@ -1011,7 +1011,12 @@ async function sendEmail(client, companyId, payload) {
       }),
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.message || `Email provider returned ${response.status}`);
+    if (!response.ok) {
+      // Log the provider's reason so it's visible in Vercel runtime logs, not
+      // just the HTTP response body.
+      console.error('Resend send failed', response.status, result?.name || '', result?.message || '');
+      throw new Error(result.message || `Email provider returned ${response.status}`);
+    }
     emailRecord.status = 'sent';
     emailRecord.provider = 'resend';
     emailRecord.provider_id = result.id;

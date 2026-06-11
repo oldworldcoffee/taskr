@@ -772,7 +772,9 @@ Address: ${loc?.address || '—'}</p>
       }
     } catch (error) {
       console.error('Failed to send email:', error);
-      toast.error('Failed to send email. Please try again.');
+      // Surface the provider's actual reason (e.g. unverified domain) instead of
+      // a generic retry message, so misconfigurations are diagnosable.
+      toast.error(`Failed to send email: ${error.message || 'Please try again.'}`);
     } finally {
       setSending(false);
     }
