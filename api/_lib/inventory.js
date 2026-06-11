@@ -2208,11 +2208,10 @@ export function previousLocalDate(localDate) {
 }
 
 async function snapshotCompanyLocations(client, companyId, { onlyDuringCatchupWindow = false, now = new Date() } = {}) {
-  const [locations, settings, items, stock] = await Promise.all([
+  const [locations, settings, items] = await Promise.all([
     fetchCompanyRows(client, 'locations', companyId),
     fetchCompanyRows(client, 'inventory_location_settings', companyId),
     fetchCompanyRows(client, 'inventory_items', companyId),
-    fetchCompanyRows(client, 'inventory_location_stock', companyId),
   ]);
 
   const activeItems = items.filter((row) => row.is_active !== false);
@@ -2232,17 +2231,38 @@ async function snapshotCompanyLocations(client, companyId, { onlyDuringCatchupWi
     if (existingError) throw existingError;
     const existing = new Set((existingRows || []).map((row) => row.item_id));
 
+    // Day-end (and day-start) quantities come from the movements ledger as of
+    // the snapshot date, so backdated activity is reflected correctly. Items
+    // with no ledger movements default to 0.
+    const { data: qtyRows, error: qtyError } = await client.rpc('inventory_ledger_quantities', {
+      p_company_id: companyId,
+      p_location_id: location.id,
+      p_date: date,
+    });
+    if (qtyError) throw qtyError;
+    const qtyByItem = new Map(
+      (qtyRows || []).map((row) => [row.item_id, {
+        end: Number(row.day_end_qty || 0),
+        start: Number(row.day_start_qty || 0),
+      }])
+    );
+
     const rows = activeItems
       .filter((item) => !existing.has(item.id))
       .map((item) => {
-        const stockRow = stock.find((row) => row.location_id === location.id && row.item_id === item.id);
+        const qty = qtyByItem.get(item.id) || { end: 0, start: 0 };
+        const unitCost = inventorySnapshotUnitCost(item, location, settings);
         return {
           company_id: companyId,
           snapshot_date: date,
           location_id: location.id,
           item_id: item.id,
-          quantity_on_hand: Number(stockRow?.on_hand_quantity || 0),
-          unit_cost: inventorySnapshotUnitCost(item, location, settings),
+          quantity_on_hand: qty.end,
+          unit_cost: unitCost,
+          day_start_quantity: qty.start,
+          day_end_quantity: qty.end,
+          day_start_value: qty.start * unitCost,
+          day_end_value: qty.end * unitCost,
         };
       });
 
@@ -2353,14 +2373,65 @@ async function submitInventoryCount(client, user, body) {
     throw httpError(400, 'Missing required count submission fields');
   }
 
+  // Effective count date. A count asserts "actual on-hand = X as of this date".
+  // Clamp to today (no future counts); a past date backdates the reconciliation.
+  const today = nowIso().slice(0, 10);
+  const countDate = (typeof body.countDate === 'string' && body.countDate && body.countDate <= today)
+    ? body.countDate
+    : today;
+  const isBackdated = countDate < today;
+
+  // Current on-hand + item cost so each counted item records a count_reconcile
+  // movement in the ledger.
+  const [stockResult, itemResult] = await Promise.all([
+    client
+      .from('inventory_location_stock')
+      .select('item_id, on_hand_quantity')
+      .eq('company_id', companyId)
+      .eq('location_id', locationId),
+    client
+      .from('inventory_items')
+      .select('id, unit_cost')
+      .eq('company_id', companyId),
+  ]);
+  if (stockResult.error) throw stockResult.error;
+  if (itemResult.error) throw itemResult.error;
+  const prevQtyByItem = new Map((stockResult.data || []).map((row) => [row.item_id, toNumber(row.on_hand_quantity, 0)]));
+  const costByItem = new Map((itemResult.data || []).map((row) => [row.id, toNumber(row.unit_cost, 0)]));
+
+  // For a backdated count, the reconcile delta is measured against the ledger
+  // quantity AS OF the count date (not current on-hand), so movements recorded
+  // after that date aren't double-counted. The same delta then adjusts the
+  // current on-hand cache (preserving post-count activity).
+  const asOfByItem = new Map();
+  if (isBackdated) {
+    const { data: moves, error: movesError } = await client
+      .from('inventory_movements')
+      .select('item_id, quantity_delta')
+      .eq('company_id', companyId)
+      .eq('location_id', locationId)
+      .lte('movement_date', countDate);
+    if (movesError) throw movesError;
+    for (const m of moves || []) {
+      asOfByItem.set(m.item_id, (asOfByItem.get(m.item_id) || 0) + toNumber(m.quantity_delta, 0));
+    }
+  }
+
   let created = 0;
   let updated = 0;
+  const movements = [];
+  const affectedItemIds = [];
   for (const [itemId, totalQty] of Object.entries(itemQtyMap)) {
     const existingId = locInvMap[itemId];
     const quantity = Number(totalQty || 0);
+    const currentOnHand = prevQtyByItem.get(itemId) || 0;
+    // Backdated: delta vs ledger-as-of-date; on-hand shifts by that delta.
+    // Today: delta vs current on-hand; on-hand becomes the counted value.
+    const delta = isBackdated ? quantity - (asOfByItem.get(itemId) || 0) : quantity - currentOnHand;
+    const newOnHand = isBackdated ? currentOnHand + delta : quantity;
     if (existingId) {
       await updateRecord(client, 'inventory_location_stock', existingId, companyId, {
-        on_hand_quantity: quantity,
+        on_hand_quantity: newOnHand,
       });
       updated += 1;
     } else {
@@ -2368,18 +2439,52 @@ async function submitInventoryCount(client, user, body) {
         company_id: companyId,
         location_id: locationId,
         item_id: itemId,
-        on_hand_quantity: quantity,
+        on_hand_quantity: newOnHand,
         par_level: 0,
         reorder_point: 0,
       });
       created += 1;
     }
+    affectedItemIds.push(itemId);
+    if (delta !== 0) {
+      movements.push({
+        company_id: companyId,
+        location_id: locationId,
+        item_id: itemId,
+        movement_date: countDate,
+        quantity_delta: delta,
+        unit_cost: costByItem.get(itemId) || 0,
+        source_type: 'count_reconcile',
+        source_id: countId,
+        created_by: user.id || null,
+        notes: 'Inventory count reconciliation',
+      });
+    }
+  }
+
+  if (movements.length) {
+    const { error: movementError } = await client.from('inventory_movements').insert(movements);
+    if (movementError) throw movementError;
+  }
+
+  // Backdated count: recompute historical snapshots from the count date forward.
+  if (isBackdated && affectedItemIds.length) {
+    const { error: recalcError } = await client.rpc('recalculate_inventory_snapshots', {
+      p_company_id: companyId,
+      p_location_id: locationId,
+      p_from_date: countDate,
+      p_item_ids: affectedItemIds,
+      p_reason: 'backdated_count',
+      p_changed_by: user.id || null,
+    });
+    if (recalcError) throw recalcError;
   }
 
   await updateRecord(client, 'inventory_counts', countId, companyId, {
     status: 'submitted',
     submitted_at: nowIso(),
     submitted_by: user.email,
+    count_date: countDate,
   });
 
   return { success: true, updated, created };

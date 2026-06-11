@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { Camera, Upload, CheckCircle, XCircle, Eye, AlertTriangle, Plus, Trash2, Loader2, Layers, RefreshCw } from 'lucide-react';
+import { Camera, Upload, CheckCircle, XCircle, Eye, AlertTriangle, Plus, Trash2, Loader2, Layers, RefreshCw, Link2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -13,6 +14,8 @@ import InventoryItemSearch from '@/components/inventory/InventoryItemSearch';
 import CreatePoolDialog from '@/components/inventory/CreatePoolDialog';
 import { activePoolsForItem, allocateDrawdowns, lineBaseQuantity } from '@/lib/prepaidPools';
 import { mergeInventoryCategories } from '@/lib/inventoryCategories';
+import { recordMovement, recalculateSnapshots } from '@/lib/inventoryLedger';
+import { matchInvoiceToOrder } from '@/lib/invoiceMatching';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 
@@ -374,14 +377,21 @@ function buildPurchaseOptionFromLine(row = {}, item = {}, invoice = {}, vendors 
 export default function Invoices() {
   const { canAccessLocation, companyId } = useAuth();
   const isMobile = useIsMobile();
+  const routerLocation = useLocation();
+  const navigate = useNavigate();
+  const [pendingReceiveOrderId, setPendingReceiveOrderId] = useState(null);
   const [locations, setLocations] = useState([]);
   const [items, setItems] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [inventoryCategories, setInventoryCategories] = useState([]);
   const [locInv, setLocInv] = useState([]);
   const [invoices, setInvoices] = useState([]);
+  const [orders, setOrders] = useState([]);
   const [uploadDialog, setUploadDialog] = useState(false);
   const [reviewDialog, setReviewDialog] = useState(null);
+  const [linkDialog, setLinkDialog] = useState(null);
+  const [linkOrderId, setLinkOrderId] = useState('');
+  const [linking, setLinking] = useState(false);
   const [quickAddRowIdx, setQuickAddRowIdx] = useState(null);
   const [quickAddForm, setQuickAddForm] = useState(EMPTY_QUICK_ADD);
   const [purchaseOptionDialog, setPurchaseOptionDialog] = useState(null);
@@ -487,6 +497,9 @@ export default function Invoices() {
       ...invoice,
       extraction_warning: invoiceWarningFor(invoice),
       vendor_name: resolveReviewVendorName(invoice, extractedItems),
+      // Received date drives inventory math; default to the printed invoice
+      // date, then today, so confirming always has a valid received date.
+      received_date: invoice.received_date || invoice.invoice_date || format(new Date(), 'yyyy-MM-dd'),
       extracted_items: extractedItems,
     };
   };
@@ -501,7 +514,8 @@ export default function Invoices() {
       base44.entities.Vendor.list(),
       companyId ? base44.entities.InventoryCategory.filter({ company_id: companyId }).catch(() => []) : Promise.resolve([]),
       base44.entities.PrepaidPool.filter({ status: 'active' }).catch(() => []),
-    ]).then(([locs, itms, linv, invs, vends, cats, poolRows]) => {
+      base44.entities.Order.list('-created_date', 200).catch(() => []),
+    ]).then(([locs, itms, linv, invs, vends, cats, poolRows, orderRows]) => {
       setLocations(locs.filter(l => canAccessLocation(l.id)));
       setItems(itms);
       setLocInv(linv);
@@ -509,6 +523,7 @@ export default function Invoices() {
       setVendors(vends);
       setInventoryCategories(cats);
       setPools(poolRows);
+      setOrders(orderRows);
       setLoading(false);
     }).catch((error) => {
       toast.error(error.message || 'Failed to load invoices');
@@ -517,6 +532,21 @@ export default function Invoices() {
   };
 
   useEffect(() => { load(); }, [companyId]);
+
+  // Arriving from an order's "Receive Order" button: pre-select the location,
+  // remember the order to link, and open the scan dialog. Clear the nav state
+  // so a refresh doesn't re-trigger it.
+  useEffect(() => {
+    const navState = routerLocation.state;
+    if (navState?.receiveOrderId) {
+      setPendingReceiveOrderId(navState.receiveOrderId);
+      if (navState.receiveLocationId) setSelectedLoc(navState.receiveLocationId);
+      setUploadError('');
+      setUploadDialog(true);
+      navigate(routerLocation.pathname, { replace: true, state: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routerLocation.state]);
 
   const resetFileInput = () => {
     if (fileRef.current) fileRef.current.value = '';
@@ -590,6 +620,24 @@ export default function Invoices() {
       total_amount: result.total_amount || invoice.total_amount || 0,
     };
 
+    // Auto-link to a purchase order unless one is already attached or the
+    // invoice was explicitly marked as not needing an order.
+    if (!invoice.order_id && invoice.match_status !== 'no_order') {
+      const vendor = findVendorByName(vendors, patch.vendor_name);
+      const match = matchInvoiceToOrder(
+        { ...invoice, ...patch },
+        orders,
+        { vendorId: vendor?.id || null }
+      );
+      if (match) {
+        patch.order_id = match.order.id;
+        patch.match_status = 'auto_matched';
+        patch.matched_at = new Date().toISOString();
+      } else {
+        patch.match_status = 'unmatched';
+      }
+    }
+
     await base44.entities.Invoice.update(invoice.id, patch);
     return {
       invoice: { ...invoice, ...patch, extraction_warning: extractionWarning },
@@ -631,7 +679,10 @@ export default function Invoices() {
         status: 'processing',
         extracted_items: [],
         total_amount: 0,
+        // Pre-link to the order when scanning via an order's "Receive Order" button.
+        ...(pendingReceiveOrderId ? { order_id: pendingReceiveOrderId, match_status: 'manually_matched', matched_at: new Date().toISOString() } : {}),
       });
+      if (pendingReceiveOrderId) setPendingReceiveOrderId(null);
       await load();
       setUploadDialog(false);
       resetFileInput();
@@ -728,6 +779,7 @@ export default function Invoices() {
     vendor_name: String(reviewDialog.vendor_name || '').trim(),
     invoice_number: String(reviewDialog.invoice_number || '').trim(),
     invoice_date: reviewDialog.invoice_date || null,
+    received_date: reviewDialog.received_date || null,
     total_amount: parseFloat(reviewDialog.total_amount) || 0,
     extracted_items: reviewDialog.extracted_items || [],
   });
@@ -1096,57 +1148,146 @@ export default function Invoices() {
     try {
       const patch = invoicePatchFromReview('confirmed');
       await base44.entities.Invoice.update(reviewDialog.id, patch);
-      // Update stock levels for matched items (pool purchases stay at the vendor).
-      // Pool-draw lines receive the case-converted base quantity so stock matches
-      // what the pool drawdown records (cases × pack size from the purchase option).
-      for (const row of patch.extracted_items) {
-        if (!row.item_id || row.pool_purchase || row.is_fee) continue;
-        let receiveQty = row.quantity || 0;
-        if (row.is_pool_draw) {
-          const item = items.find(i => i.id === row.item_id);
-          const matchedOption = item ? (item.purchase_options || []).find((option) => purchaseOptionMatchesLine(option, row)) : null;
-          receiveQty = lineBaseQuantity(row, item || {}, matchedOption);
-        }
-        const li = locInv.find(l => l.location_id === patch.location_id && l.item_id === row.item_id);
-        const newQty = (li?.on_hand_quantity || 0) + receiveQty;
-        if (li) await base44.entities.LocationInventory.update(li.id, { ...li, on_hand_quantity: newQty });
-        else await base44.entities.LocationInventory.create({ location_id: patch.location_id, item_id: row.item_id, on_hand_quantity: newQty, par_level: 0, reorder_point: 0 });
+
+      // Received date drives all inventory math (snapshots, valuation), not the
+      // entry date. Fall back to the printed invoice date, then today.
+      const receivedDateStr = dateInputValue(patch.received_date)
+        || dateInputValue(patch.invoice_date)
+        || format(new Date(), 'yyyy-MM-dd');
+      const movementCompanyId = reviewDialog.company_id || companyId;
+
+      // Lines that physically add stock (pool purchases stay at the vendor; fees never stock).
+      const receivableRows = patch.extracted_items.filter(
+        row => row.item_id && !row.pool_purchase && !row.is_fee
+      );
+
+      // One receiving event per confirmed invoice records the physical arrival.
+      // Its lines drive the inventory_movements ledger via record_inventory_movement,
+      // which also keeps location_stock.on_hand_quantity in sync.
+      let receivingEvent = null;
+      if (receivableRows.length) {
+        receivingEvent = await base44.entities.ReceivingEvent.create({
+          company_id: movementCompanyId,
+          order_id: reviewDialog.order_id || null,
+          location_id: patch.location_id,
+          received_date: receivedDateStr,
+          received_at: new Date().toISOString(),
+          reference: patch.invoice_number || null,
+          status: 'received',
+        });
       }
-      // Record prepaid pool drawdowns for pool-draw lines at the locked pool cost
-      const poolDrawRows = patch.extracted_items.filter(row => row.item_id && row.is_pool_draw && !row.pool_purchase);
+
+      const recordReceivingLine = (row, qty, lineStatus = 'received') => {
+        if (!receivingEvent) return Promise.resolve(null);
+        return base44.entities.ReceivingLine.create({
+          company_id: movementCompanyId,
+          receiving_event_id: receivingEvent.id,
+          item_id: row.item_id,
+          quantity_received: qty,
+          unit_cost: Number(row.unit_cost || 0),
+          line_status: lineStatus,
+        });
+      };
+
+      // Standard receipts: stock added at the invoice line cost.
+      for (const row of receivableRows) {
+        if (row.is_pool_draw) continue; // handled with pool drawdowns below
+        const receiveQty = row.quantity || 0;
+        if (receiveQty <= 0) continue;
+        const recvLine = await recordReceivingLine(row, receiveQty);
+        await recordMovement({
+          companyId: movementCompanyId,
+          locationId: patch.location_id,
+          itemId: row.item_id,
+          quantityDelta: receiveQty,
+          unitCost: Number(row.unit_cost || 0),
+          sourceType: 'receipt',
+          movementDate: receivedDateStr,
+          sourceId: recvLine?.id || reviewDialog.id,
+          notes: `Invoice ${patch.invoice_number || reviewDialog.id}`,
+        });
+      }
+
+      // Pool-draw lines: receive the case-converted base quantity at the locked
+      // pool cost, recording prepaid drawdowns alongside the ledger movement.
+      const poolDrawRows = receivableRows.filter(row => row.is_pool_draw);
       if (poolDrawRows.length) {
         const freshPools = await base44.entities.PrepaidPool.filter({ status: 'active' });
-        const drawnDate = dateInputValue(patch.invoice_date) || format(new Date(), 'yyyy-MM-dd');
         let overdrawn = false;
         for (const row of poolDrawRows) {
           const item = items.find(i => i.id === row.item_id);
           const matchedOption = item ? (item.purchase_options || []).find((option) => purchaseOptionMatchesLine(option, row)) : null;
           const baseQty = lineBaseQuantity(row, item || {}, matchedOption);
+          if (baseQty <= 0) continue;
           const itemPools = activePoolsForItem(freshPools, row.item_id);
-          if (!itemPools.length || baseQty <= 0) continue;
+          let drawnCost = 0;
           for (const allocation of allocateDrawdowns(itemPools, baseQty)) {
             const available = Math.max(Number(allocation.pool.remaining_quantity || 0), 0);
             if (allocation.quantity > available) overdrawn = true;
+            const poolUnitCost = Number(allocation.pool.unit_cost || 0);
             await base44.entities.PoolDrawdown.create({
               pool_id: allocation.pool.id,
               item_id: row.item_id,
               location_id: patch.location_id,
               invoice_id: reviewDialog.id,
               quantity: allocation.quantity,
-              unit_cost: Number(allocation.pool.unit_cost || 0),
-              total_cost: allocation.quantity * Number(allocation.pool.unit_cost || 0),
-              drawn_date: drawnDate,
+              unit_cost: poolUnitCost,
+              total_cost: allocation.quantity * poolUnitCost,
+              drawn_date: receivedDateStr,
               draw_type: 'invoice',
             });
+            drawnCost += allocation.quantity * poolUnitCost;
             // keep local remaining in sync so later lines on this invoice allocate correctly
             allocation.pool.remaining_quantity = Number(allocation.pool.remaining_quantity || 0) - allocation.quantity;
           }
+          // Add the received stock through the ledger at the weighted pool cost.
+          const recvLine = await recordReceivingLine(row, baseQty);
+          await recordMovement({
+            companyId: movementCompanyId,
+            locationId: patch.location_id,
+            itemId: row.item_id,
+            quantityDelta: baseQty,
+            unitCost: baseQty > 0 ? drawnCost / baseQty : 0,
+            sourceType: 'pool_draw',
+            movementDate: receivedDateStr,
+            sourceId: recvLine?.id || reviewDialog.id,
+            notes: `Pool draw — invoice ${patch.invoice_number || reviewDialog.id}`,
+          });
         }
         if (overdrawn) {
           toast.warning('A prepaid pool was overdrawn by this invoice. Check the Pools page and record an adjustment if needed.');
         }
       }
-      // Update related commissary order status to 'received'
+
+      // Link the invoice to the receiving event it produced.
+      if (receivingEvent) {
+        await base44.entities.Invoice.update(reviewDialog.id, { receiving_event_id: receivingEvent.id });
+      }
+
+      // Backdated receiving: recompute historical snapshots from the received
+      // date forward and record the corrections in the snapshot audit trail.
+      const today = format(new Date(), 'yyyy-MM-dd');
+      if (receivableRows.length && receivedDateStr < today) {
+        try {
+          const affectedItemIds = [...new Set(receivableRows.map(row => row.item_id))];
+          const changed = await recalculateSnapshots({
+            companyId: movementCompanyId,
+            locationId: patch.location_id,
+            fromDate: receivedDateStr,
+            itemIds: affectedItemIds,
+            reason: 'backdated_invoice',
+            invoiceId: reviewDialog.id,
+            receivingEventId: receivingEvent?.id || null,
+          });
+          if (changed > 0) {
+            toast.info(`Updated ${changed} historical snapshot${changed > 1 ? 's' : ''} for the backdated received date.`);
+          }
+        } catch (recalcError) {
+          console.error('Snapshot recalculation failed:', recalcError);
+          toast.warning('Stock received, but historical snapshot recalculation failed. Check the audit log.');
+        }
+      }
+      // Roll received quantities back to the linked order and update its status.
       if (reviewDialog.order_id) {
         try {
           const order = await base44.entities.Order.get(reviewDialog.order_id);
@@ -1159,6 +1300,8 @@ export default function Invoices() {
                 received_at: new Date().toISOString()
               });
             }
+          } else if (order) {
+            await applyOrderReceivingRollup(order);
           }
         } catch (err) {
           console.error('Failed to update order status:', err);
@@ -1181,11 +1324,91 @@ export default function Invoices() {
     setReviewDialog(null);
   };
 
+  // Recompute a vendor order's per-line received quantities from all of its
+  // receiving events, and set the order status (ordered → partially_received →
+  // fully_received). Skips manually closed/cancelled orders.
+  const applyOrderReceivingRollup = async (order) => {
+    if (!order || ['closed', 'cancelled'].includes(order.status)) return;
+    const events = await base44.entities.ReceivingEvent.filter({ order_id: order.id });
+    const receivedByItem = {};
+    for (const ev of events) {
+      const evLines = await base44.entities.ReceivingLine.filter({ receiving_event_id: ev.id });
+      for (const line of evLines) {
+        if (!line.item_id) continue;
+        receivedByItem[line.item_id] = (receivedByItem[line.item_id] || 0) + Number(line.quantity_received || 0);
+      }
+    }
+    const orderItems = Array.isArray(order.items) ? order.items : [];
+    const items = orderItems.map(it => ({ ...it, quantity_received: receivedByItem[it.item_id] || 0 }));
+    const anyReceived = items.some(it => Number(it.quantity_received || 0) > 0);
+    const allReceived = items.length > 0 && items.every(it =>
+      Number(it.quantity_ordered || 0) > 0 && Number(it.quantity_received || 0) >= Number(it.quantity_ordered || 0)
+    );
+    const status = allReceived ? 'fully_received' : (anyReceived ? 'partially_received' : order.status);
+    await base44.entities.Order.update(order.id, {
+      items,
+      status,
+      received_at: anyReceived ? new Date().toISOString() : order.received_at,
+    });
+  };
+
+  const orderById = (id) => orders.find(o => o.id === id) || null;
+  const orderLabel = (order) => order ? (order.order_number || order.po_number || `Order ${String(order.id).slice(0, 8)}`) : '';
+
+  const openLinkDialog = (invoice) => {
+    setLinkOrderId(invoice.order_id || '');
+    setLinkDialog(invoice);
+  };
+
+  // Candidate orders for manual linking: same location (if known) and not in a
+  // terminal state, newest first.
+  const linkCandidateOrders = (invoice) => {
+    if (!invoice) return [];
+    const terminal = new Set(['cancelled', 'closed', 'fully_received', 'received']);
+    return orders
+      .filter(o => !terminal.has(String(o.status || '').toLowerCase()))
+      .filter(o => !invoice.location_id || !o.location_id || o.location_id === invoice.location_id)
+      .sort((a, b) => new Date(b.created_date) - new Date(a.created_date));
+  };
+
+  const markInvoiceNoOrder = async (invoice) => {
+    try {
+      await base44.entities.Invoice.update(invoice.id, { match_status: 'no_order', order_id: null });
+      await load();
+      setReviewDialog(prev => (prev && prev.id === invoice.id ? { ...prev, match_status: 'no_order', order_id: null } : prev));
+      toast.success('Marked as no order needed.');
+    } catch (error) {
+      toast.error(error.message || 'Failed to update invoice');
+    }
+  };
+
+  const linkInvoiceToOrder = async () => {
+    if (!linkDialog) return;
+    setLinking(true);
+    try {
+      const patch = linkOrderId
+        ? { order_id: linkOrderId, match_status: 'manually_matched', matched_at: new Date().toISOString() }
+        : { order_id: null, match_status: 'unmatched', matched_at: null };
+      await base44.entities.Invoice.update(linkDialog.id, patch);
+      await load();
+      setReviewDialog(prev => (prev && prev.id === linkDialog.id ? { ...prev, ...patch } : prev));
+      toast.success(linkOrderId ? 'Invoice linked to order.' : 'Invoice unlinked.');
+      setLinkDialog(null);
+    } catch (error) {
+      toast.error(error.message || 'Failed to link invoice');
+    } finally {
+      setLinking(false);
+    }
+  };
+
   const locName = (id) => locations.find(l => l.id === id)?.name || '—';
+  const unmatchedInvoices = invoices.filter(i => !i.order_id && i.match_status !== 'no_order' && i.status !== 'rejected');
   const processingCount = invoices.filter(i => i.status === 'processing').length;
   const staleProcessingCount = invoices.filter(isProcessingStale).length;
   const pendingCount = invoices.filter(i => i.status === 'pending_review').length;
   const scanBusy = uploading || extracting;
+  // Already-finalized invoices open read-only (no re-receive / re-reject).
+  const reviewIsFinalized = ['confirmed', 'rejected'].includes(reviewDialog?.status);
   const lineItemCount = reviewDialog?.extracted_items?.length || 0;
   const unmatchedLineCount = (reviewDialog?.extracted_items || []).filter(row => !row.item_id && !row.is_fee).length;
   const feeLineCount = (reviewDialog?.extracted_items || []).filter(row => row.is_fee).length;
@@ -1225,6 +1448,41 @@ export default function Invoices() {
         </div>
       )}
 
+      {!loading && unmatchedInvoices.length > 0 && (
+        <div className="mb-4 rounded-lg border border-orange-200 bg-orange-50/60 p-3">
+          <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-orange-800">
+            <Link2 className="h-4 w-4 flex-shrink-0" />
+            Unmatched invoices ({unmatchedInvoices.length})
+            <span className="font-normal text-orange-700/80">— not linked to a purchase order</span>
+            <button
+              type="button"
+              className="ml-auto text-xs font-medium text-orange-700 underline-offset-2 hover:underline"
+              onClick={() => unmatchedInvoices.forEach(inv => markInvoiceNoOrder(inv))}
+            >
+              Dismiss all (no order)
+            </button>
+          </div>
+          <div className="space-y-2">
+            {unmatchedInvoices.map(inv => (
+              <div key={inv.id} className="flex items-center justify-between gap-3 rounded-md border border-orange-100 bg-white px-3 py-2 text-sm">
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{inv.vendor_name || '—'} · <span className="font-mono">{inv.invoice_number || 'no #'}</span></p>
+                  <p className="text-xs text-muted-foreground">{locName(inv.location_id)} · {inv.invoice_date ? format(new Date(inv.invoice_date), 'MMM d, yyyy') : '—'} · ${(inv.total_amount || 0).toFixed(2)}</p>
+                </div>
+                <div className="flex flex-shrink-0 items-center gap-1.5">
+                  <Button size="sm" variant="ghost" className="h-8 text-xs text-muted-foreground" onClick={() => markInvoiceNoOrder(inv)}>
+                    No order needed
+                  </Button>
+                  <Button size="sm" variant="outline" className="h-8" onClick={() => openLinkDialog(inv)}>
+                    <Link2 className="mr-1 h-3.5 w-3.5" />Link to order
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center h-32"><div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" /></div>
       ) : isMobile ? (
@@ -1256,6 +1514,11 @@ export default function Invoices() {
               {inv.status === 'pending_review' && (
                 <Button size="sm" className="w-full h-9" onClick={() => setReviewDialog(prepareReviewInvoice(inv))}>
                   <Eye className="w-4 h-4 mr-1" />Review Invoice
+                </Button>
+              )}
+              {(inv.status === 'confirmed' || inv.status === 'rejected') && (
+                <Button size="sm" variant="outline" className="w-full h-9" onClick={() => setReviewDialog(prepareReviewInvoice(inv))}>
+                  <Eye className="w-4 h-4 mr-1" />View Details
                 </Button>
               )}
               {inv.status === 'processing' && (
@@ -1312,6 +1575,11 @@ export default function Invoices() {
                     {inv.status === 'pending_review' && (
                       <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setReviewDialog(prepareReviewInvoice(inv))}>
                         Review
+                      </Button>
+                    )}
+                    {(inv.status === 'confirmed' || inv.status === 'rejected') && (
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setReviewDialog(prepareReviewInvoice(inv))}>
+                        <Eye className="w-3.5 h-3.5 mr-1" />View
                       </Button>
                     )}
                     {inv.status === 'processing' && (
@@ -1384,13 +1652,57 @@ export default function Invoices() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={!!linkDialog} onOpenChange={(open) => { if (!open) setLinkDialog(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Link invoice to order</DialogTitle></DialogHeader>
+          {linkDialog && (
+            <div className="space-y-3 py-2">
+              <div className="rounded-md border border-border bg-muted/30 p-2 text-sm">
+                <p className="font-medium">{linkDialog.vendor_name || '—'} · <span className="font-mono">{linkDialog.invoice_number || 'no #'}</span></p>
+                <p className="text-xs text-muted-foreground">{locName(linkDialog.location_id)} · {linkDialog.invoice_date ? format(new Date(linkDialog.invoice_date), 'MMM d, yyyy') : '—'}</p>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Purchase order</Label>
+                <select
+                  className="mt-1 w-full border border-input rounded-md px-3 py-2 text-sm bg-background"
+                  value={linkOrderId}
+                  onChange={e => setLinkOrderId(e.target.value)}
+                >
+                  <option value="">Unlinked</option>
+                  {linkCandidateOrders(linkDialog).map(o => (
+                    <option key={o.id} value={o.id}>
+                      {orderLabel(o)} · {o.vendor_name || vendors.find(v => v.id === o.vendor_id)?.name || '—'} · {o.created_date ? format(new Date(o.created_date), 'MMM d') : ''} · {String(o.status || '').replace(/_/g, ' ')}
+                    </option>
+                  ))}
+                </select>
+                {linkCandidateOrders(linkDialog).length === 0 && (
+                  <p className="mt-1 text-xs text-amber-600">No open orders for this location to link to.</p>
+                )}
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLinkDialog(null)} disabled={linking}>Cancel</Button>
+            <Button onClick={linkInvoiceToOrder} disabled={linking || (!linkOrderId && !linkDialog?.order_id)}>
+              {linking ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              {linkOrderId ? 'Link' : (linkDialog?.order_id ? 'Unlink' : 'Link')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Review Dialog */}
       <Dialog open={!!reviewDialog} onOpenChange={(open) => { if (!open) { setReviewDialog(null); closeQuickAdd(); closePurchaseOptionDialog(); } }}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Review Invoice — AI Extracted Data</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{reviewIsFinalized ? 'Invoice Details' : 'Review Invoice — AI Extracted Data'}</DialogTitle></DialogHeader>
           {reviewDialog && (
             <div className="space-y-4 py-2">
-              {reviewDialog.extraction_warning ? (
+              {reviewIsFinalized ? (
+                <div className="bg-muted/50 border border-border rounded-lg p-3 text-sm text-muted-foreground flex items-start gap-2">
+                  <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-green-600" />
+                  <span>This invoice has been {reviewDialog.status === 'confirmed' ? 'received' : 'rejected'}. You can review the details and fix info like vendor or dates — editing line quantities here will not change stock that was already received.</span>
+                </div>
+              ) : reviewDialog.extraction_warning ? (
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700 flex items-start gap-2">
                   <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                   <span>{reviewDialog.extraction_warning}</span>
@@ -1435,6 +1747,31 @@ export default function Invoices() {
                   <Label className="text-sm font-semibold">Invoice Details</Label>
                   <span className="text-xs text-muted-foreground">Edit anything the scan read incorrectly.</span>
                 </div>
+                <div className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-2.5 py-1.5 text-xs">
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    <Link2 className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                    {reviewDialog.order_id ? (
+                      <span className="truncate">
+                        Linked to <span className="font-medium">{orderLabel(orderById(reviewDialog.order_id))}</span>
+                        {reviewDialog.match_status && <span className="text-muted-foreground"> · {String(reviewDialog.match_status).replace(/_/g, ' ')}</span>}
+                      </span>
+                    ) : reviewDialog.match_status === 'no_order' ? (
+                      <span className="text-muted-foreground">No order needed</span>
+                    ) : (
+                      <span className="text-orange-700">Not linked to an order</span>
+                    )}
+                  </span>
+                  <div className="flex flex-shrink-0 items-center gap-1">
+                    {!reviewDialog.order_id && reviewDialog.match_status !== 'no_order' && (
+                      <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs text-muted-foreground" onClick={() => markInvoiceNoOrder(reviewDialog)}>
+                        No order needed
+                      </Button>
+                    )}
+                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => openLinkDialog(reviewDialog)}>
+                      {reviewDialog.order_id ? 'Change' : 'Link'}
+                    </Button>
+                  </div>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <Label className="text-xs text-muted-foreground">Vendor</Label>
@@ -1468,6 +1805,16 @@ export default function Invoices() {
                       value={dateInputValue(reviewDialog.invoice_date)}
                       onChange={e => updateReviewField('invoice_date', e.target.value || null)}
                     />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Received Date</Label>
+                    <Input
+                      className="mt-1"
+                      type="date"
+                      value={dateInputValue(reviewDialog.received_date)}
+                      onChange={e => updateReviewField('received_date', e.target.value || null)}
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">Drives inventory counts &amp; valuation.</p>
                   </div>
                   <div>
                     <Label className="text-xs text-muted-foreground">Total</Label>
@@ -1510,27 +1857,15 @@ export default function Invoices() {
                     <Plus className="w-3.5 h-3.5 mr-1" />Add Line
                   </Button>
                 </div>
-                <div className="border border-border rounded-lg overflow-x-auto">
-                  <table className="w-full min-w-[920px] text-sm">
-                    <thead className="bg-muted/50">
-                      <tr>
-                        {['AI Extracted Name', 'Match to Item', 'Qty', 'UOM', 'Unit Cost', 'Total', 'Actions'].map(h => (
-                          <th key={h} className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {lineItemCount === 0 && (
-                        <tr>
-                          <td colSpan={7} className="px-3 py-6 text-center text-sm text-muted-foreground">
-                            No line items found. Add a line manually or reject this invoice.
-                          </td>
-                        </tr>
-                      )}
-                      {(reviewDialog.extracted_items || []).map((row, idx) => (
-                        <tr key={idx} className="hover:bg-muted/20">
-                          <td className="px-3 py-2">
-                            <div className="space-y-1">
+                <div className="space-y-2">
+                  {lineItemCount === 0 && (
+                    <div className="rounded-lg border border-border px-3 py-6 text-center text-sm text-muted-foreground">
+                      No line items found. Add a line manually or reject this invoice.
+                    </div>
+                  )}
+                  {(reviewDialog.extracted_items || []).map((row, idx) => (
+                    <div key={idx} className="rounded-lg border border-border p-3 space-y-3">
+                      <div className="space-y-1">
                               <p className="text-xs text-muted-foreground">{row.item_name}</p>
                               {(firstLineCode(row) || row.pack_size) && (
                                 <p className="text-[11px] text-muted-foreground">
@@ -1581,28 +1916,37 @@ export default function Invoices() {
                                   Pool purchase — no stock received
                                 </span>
                               )}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2">
-                            <InventoryItemSearch
-                              value={row.item_id || ''}
-                              onChange={(itemId) => updateExtractedItem(idx, 'item_id', itemId)}
-                              items={items}
-                              extractedName={row.item_name}
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <Input type="number" className="w-20 h-7 text-xs" value={row.quantity} onChange={e => updateExtractedItem(idx, 'quantity', e.target.value)} />
-                          </td>
-                          <td className="px-3 py-2">
-                            <Input className="w-20 h-7 text-xs" value={row.unit_of_measure || ''} onChange={e => updateExtractedItem(idx, 'unit_of_measure', e.target.value)} />
-                          </td>
-                          <td className="px-3 py-2">
-                            <Input type="number" step="0.01" className="w-20 h-7 text-xs" value={row.unit_cost} onChange={e => updateExtractedItem(idx, 'unit_cost', e.target.value)} />
-                          </td>
-                          <td className="px-3 py-2 text-xs font-medium">${(row.total_cost || ((row.quantity || 0) * (row.unit_cost || 0))).toFixed(2)}</td>
-                          <td className="px-3 py-2">
-                            <div className="flex items-center gap-1">
+                      </div>
+                      <div>
+                        <Label className="text-xs text-muted-foreground">Match to inventory item</Label>
+                        <div className="mt-1">
+                          <InventoryItemSearch
+                            value={row.item_id || ''}
+                            onChange={(itemId) => updateExtractedItem(idx, 'item_id', itemId)}
+                            items={items}
+                            extractedName={row.item_name}
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Qty</Label>
+                          <Input type="number" className="mt-1 h-8 text-sm" value={row.quantity} onChange={e => updateExtractedItem(idx, 'quantity', e.target.value)} />
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">UOM</Label>
+                          <Input className="mt-1 h-8 text-sm" value={row.unit_of_measure || ''} onChange={e => updateExtractedItem(idx, 'unit_of_measure', e.target.value)} />
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Unit Cost</Label>
+                          <Input type="number" step="0.01" className="mt-1 h-8 text-sm" value={row.unit_cost} onChange={e => updateExtractedItem(idx, 'unit_cost', e.target.value)} />
+                        </div>
+                        <div>
+                          <Label className="text-xs text-muted-foreground">Total</Label>
+                          <p className="mt-1 flex h-8 items-center text-sm font-medium">${(row.total_cost || ((row.quantity || 0) * (row.unit_cost || 0))).toFixed(2)}</p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1">
                               {!row.item_id && !row.is_fee && (
                                 <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => openQuickAdd(idx)}>
                                   <Plus className="w-3.5 h-3.5 mr-1" />Add Item
@@ -1660,28 +2004,37 @@ export default function Invoices() {
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" className="text-destructive" onClick={rejectInvoice}>
-              <XCircle className="w-4 h-4 mr-1" />Reject
-            </Button>
-            <Button variant="outline" onClick={saveInvoiceReview} disabled={savingReview || confirming}>
-              {savingReview ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
-              {savingReview ? 'Saving...' : 'Save Changes'}
-            </Button>
-            <Button onClick={confirmInvoice} disabled={confirming || savingReview || lineItemCount === 0 || unmatchedLineCount > 0}>
-              <CheckCircle className="w-4 h-4 mr-1" />
-              {confirming ? 'Confirming...' : allLinesArePoolPurchases ? 'Confirm — Vendor Holds Stock' : 'Confirm & Receive Stock'}
-            </Button>
+            {reviewIsFinalized ? (
+              <>
+                <Button variant="outline" onClick={saveInvoiceReview} disabled={savingReview}>
+                  {savingReview ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+                  {savingReview ? 'Saving...' : 'Save Changes'}
+                </Button>
+                <Button onClick={() => setReviewDialog(null)}>Done</Button>
+              </>
+            ) : (
+              <>
+                <Button variant="outline" className="text-destructive" onClick={rejectInvoice}>
+                  <XCircle className="w-4 h-4 mr-1" />Reject
+                </Button>
+                <Button variant="outline" onClick={saveInvoiceReview} disabled={savingReview || confirming}>
+                  {savingReview ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+                  {savingReview ? 'Saving...' : 'Save Changes'}
+                </Button>
+                <Button onClick={confirmInvoice} disabled={confirming || savingReview || lineItemCount === 0 || unmatchedLineCount > 0}>
+                  <CheckCircle className="w-4 h-4 mr-1" />
+                  {confirming ? 'Confirming...' : allLinesArePoolPurchases ? 'Confirm — Vendor Holds Stock' : 'Confirm & Receive Stock'}
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

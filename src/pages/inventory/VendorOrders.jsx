@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { enrichLocationsWithInventorySettings, getVendorCommissaryLocationId, isCommissaryLocation } from '@/lib/inventoryLocations';
-import { ShoppingCart, Send, Eye, Trash2 } from 'lucide-react';
+import { ShoppingCart, Send, Eye, Trash2, PackageCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
@@ -34,6 +35,27 @@ const lineTotal = (item) => {
   return asNumber(item?.qty ?? item?.quantity_ordered) * asNumber(item?.unit_cost);
 };
 const cartTotal = (cart) => asArray(cart).reduce((sum, item) => sum + lineTotal(item), 0);
+
+// Per-line receipt status: an explicit line_status wins, otherwise derive from
+// ordered vs received quantities.
+const receiptLineStatus = (item) => {
+  if (item?.line_status) return item.line_status;
+  const ordered = asNumber(item?.quantity_ordered);
+  const received = asNumber(item?.quantity_received);
+  if (received <= 0) return 'pending';
+  if (received >= ordered) return 'received';
+  return 'partial';
+};
+const LINE_STATUS_BADGE = {
+  pending: 'pending', partial: 'partial', received: 'fully_received',
+  backordered: 'backstocked', cancelled_by_vendor: 'cancelled',
+  not_received: 'cancelled', substitute_received: 'viewed',
+};
+const LINE_STATUS_LABELS = {
+  pending: 'Pending', partial: 'Partial', received: 'Received',
+  backordered: 'Backordered', cancelled_by_vendor: 'Cancelled', // by vendor
+  not_received: 'Not received', substitute_received: 'Substitute',
+};
 const purchaseOptionsFor = (item) => Array.isArray(item?.purchase_options) ? item.purchase_options : [];
 const locationSettingsFor = (vendor) => asArray(vendor?.location_settings);
 const firstArray = (...values) => values.find(Array.isArray) || [];
@@ -42,6 +64,7 @@ const firstArray = (...values) => values.find(Array.isArray) || [];
 export default function VendorOrders() {
   const { canAccessLocation, user, companyId } = useAuth();
   const isMobile = useIsMobile();
+  const navigate = useNavigate();
   const [locations, setLocations] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [items, setItems] = useState([]);
@@ -57,6 +80,8 @@ export default function VendorOrders() {
   const [emailDeliveryDate, setEmailDeliveryDate] = useState('');
   const [sending, setSending] = useState(false);
   const [viewDialog, setViewDialog] = useState(null);
+  const [viewReceiving, setViewReceiving] = useState([]);
+  const [closingOrder, setClosingOrder] = useState(false);
   const [editDialog, setEditDialog] = useState(null);
   const [smartFillDialog, setSmartFillDialog] = useState(false);
   const [aiReviewDialog, setAiReviewDialog] = useState(false);
@@ -843,6 +868,79 @@ Address: ${loc?.address || '—'}</p>
     }
   };
 
+  const openOrderDetail = async (order) => {
+    let freshOrder = await base44.entities.Order.get(order.id);
+    setViewDialog(freshOrder);
+    setViewReceiving([]);
+    try {
+      const events = await base44.entities.ReceivingEvent.filter({ order_id: order.id }, '-received_date');
+      setViewReceiving(asArray(events));
+      // Self-heal: recompute received quantities + status from receiving events
+      // (covers orders received before the roll-up existed). Persist only if it
+      // actually changed, and never override a manual close/cancel.
+      const synced = await syncOrderFromReceiving(freshOrder, asArray(events));
+      if (synced) {
+        freshOrder = synced;
+        setViewDialog(synced);
+        setOrders(prev => prev.map(o => (o.id === synced.id ? { ...o, ...synced } : o)));
+      }
+    } catch (error) {
+      console.error('Failed to load receiving history:', error);
+    }
+  };
+
+  // Recompute an order's per-line received quantities and status from its
+  // receiving events. Returns the updated order if anything changed, else null.
+  const syncOrderFromReceiving = async (order, events) => {
+    if (!order || ['closed', 'cancelled'].includes(order.status) || !events.length) return null;
+    const receivedByItem = {};
+    for (const ev of events) {
+      const evLines = await base44.entities.ReceivingLine.filter({ receiving_event_id: ev.id });
+      for (const line of asArray(evLines)) {
+        if (!line.item_id) continue;
+        receivedByItem[line.item_id] = (receivedByItem[line.item_id] || 0) + asNumber(line.quantity_received);
+      }
+    }
+    const items = asArray(order.items).map(it => ({ ...it, quantity_received: receivedByItem[it.item_id] || 0 }));
+    const anyReceived = items.some(it => asNumber(it.quantity_received) > 0);
+    const allReceived = items.length > 0 && items.every(it =>
+      asNumber(it.quantity_ordered) > 0 && asNumber(it.quantity_received) >= asNumber(it.quantity_ordered));
+    const status = allReceived ? 'fully_received' : (anyReceived ? 'partially_received' : order.status);
+    const changed = status !== order.status ||
+      items.some((it, i) => asNumber(it.quantity_received) !== asNumber(asArray(order.items)[i]?.quantity_received));
+    if (!changed) return null;
+    return base44.entities.Order.update(order.id, {
+      items, status, received_at: anyReceived ? (order.received_at || new Date().toISOString()) : order.received_at,
+    });
+  };
+
+  // Manually close an incomplete order, or reopen a closed one (recomputing its
+  // received status from line quantities).
+  const toggleOrderClosed = async () => {
+    if (!viewDialog) return;
+    setClosingOrder(true);
+    try {
+      let patch;
+      if (viewDialog.status === 'closed') {
+        const its = asArray(viewDialog.items);
+        const anyReceived = its.some(i => asNumber(i.quantity_received) > 0);
+        const allReceived = its.length > 0 && its.every(i =>
+          asNumber(i.quantity_ordered) > 0 && asNumber(i.quantity_received) >= asNumber(i.quantity_ordered));
+        patch = { status: allReceived ? 'fully_received' : (anyReceived ? 'partially_received' : 'ordered'), closed_at: null, close_reason: null };
+      } else {
+        patch = { status: 'closed', closed_at: new Date().toISOString() };
+      }
+      await base44.entities.Order.update(viewDialog.id, patch);
+      setViewDialog(prev => prev ? { ...prev, ...patch } : prev);
+      await refreshOrders();
+      toast.success(patch.status === 'closed' ? 'Order closed.' : 'Order reopened.');
+    } catch (error) {
+      toast.error(error.message || 'Failed to update order');
+    } finally {
+      setClosingOrder(false);
+    }
+  };
+
   if (loading) return (
     <div className="flex items-center justify-center h-64">
       <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
@@ -873,10 +971,7 @@ Address: ${loc?.address || '—'}</p>
         orders={orders} 
         locName={locName} 
         vendorName={vendorName} 
-        onView={async (order) => {
-          const freshOrder = await base44.entities.Order.get(order.id);
-          setViewDialog(freshOrder);
-        }} 
+        onView={openOrderDetail}
         onEdit={editDraftOrder} 
         onDelete={setDeleteDialog} 
       />
@@ -1008,9 +1103,9 @@ Address: ${loc?.address || '—'}</p>
           <DialogHeader><DialogTitle>Order {viewDialog?.order_number}</DialogTitle></DialogHeader>
           {viewDialog && (
             <div className="space-y-3 py-2 text-sm">
-              <div className="grid grid-cols-2 gap-2">
-                <div><span className="text-muted-foreground">Location:</span> <span className="font-medium">{locName(viewDialog.location_id)}</span></div>
-                <div><span className="text-muted-foreground">Vendor:</span> <span className="font-medium">{vendorName(viewDialog.vendor_id)}</span></div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="break-words"><span className="text-muted-foreground">Location:</span> <span className="font-medium">{locName(viewDialog.location_id)}</span></div>
+                <div className="break-words"><span className="text-muted-foreground">Vendor:</span> <span className="font-medium">{vendorName(viewDialog.vendor_id)}</span></div>
                 <div><span className="text-muted-foreground">Status:</span> <StatusBadge status={viewDialog.status} /></div>
                 <div><span className="text-muted-foreground">Fulfilled:</span> <span className="font-bold text-green-600">${money(asArray(viewDialog.items).reduce((sum, item) => sum + (asNumber(item.quantity_received) * asNumber(item.unit_cost)), 0))}</span></div>
               </div>
@@ -1026,30 +1121,75 @@ Address: ${loc?.address || '—'}</p>
                   <p className="text-sm text-amber-900">{viewDialog.backstock_note}</p>
                 </div>
               )}
-              <div className="border border-border rounded-lg overflow-hidden">
+              <div className="border border-border rounded-lg overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50">
                     <tr>
-                      {['Item', 'Ordered', 'Received', 'UOM', 'Unit $', 'Total'].map(h => <th key={h} className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">{h}</th>)}
+                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Item</th>
+                      <th className="text-left px-2 py-2 text-xs font-medium text-muted-foreground whitespace-nowrap">Ord.</th>
+                      <th className="text-left px-2 py-2 text-xs font-medium text-muted-foreground whitespace-nowrap">Recv.</th>
+                      <th className="text-left px-2 py-2 text-xs font-medium text-muted-foreground whitespace-nowrap">Rem.</th>
+                      <th className="text-left px-3 py-2 text-xs font-medium text-muted-foreground">Status</th>
+                      <th className="hidden sm:table-cell text-left px-3 py-2 text-xs font-medium text-muted-foreground whitespace-nowrap">Unit $</th>
+                      <th className="hidden sm:table-cell text-left px-3 py-2 text-xs font-medium text-muted-foreground">Total</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {asArray(viewDialog.items).map((item, i) => (
-                      <tr key={i}>
-                        <td className="px-3 py-2">{item.item_name}</td>
-                        <td className="px-3 py-2">{item.quantity_ordered}</td>
-                        <td className="px-3 py-2 font-medium text-green-600">{item.quantity_received || 0}</td>
-                        <td className="px-3 py-2 text-muted-foreground">{item.unit_of_measure}</td>
-                        <td className="px-3 py-2">${money(item.unit_cost)}</td>
-                        <td className="px-3 py-2 font-medium">${money(lineTotal(item))}</td>
-                      </tr>
-                    ))}
+                    {asArray(viewDialog.items).map((item, i) => {
+                      const ordered = asNumber(item.quantity_ordered);
+                      const received = asNumber(item.quantity_received);
+                      const remaining = Math.max(0, ordered - received);
+                      const st = receiptLineStatus(item);
+                      return (
+                        <tr key={i}>
+                          <td className="px-3 py-2">{item.item_name}</td>
+                          <td className="px-2 py-2">{ordered}</td>
+                          <td className="px-2 py-2 font-medium text-green-600">{received}</td>
+                          <td className={`px-2 py-2 font-medium ${remaining > 0 ? 'text-amber-700' : 'text-muted-foreground'}`}>{remaining}</td>
+                          <td className="px-3 py-2"><StatusBadge status={LINE_STATUS_BADGE[st] || 'pending'} label={LINE_STATUS_LABELS[st]} /></td>
+                          <td className="hidden sm:table-cell px-3 py-2">${money(item.unit_cost)}</td>
+                          <td className="hidden sm:table-cell px-3 py-2 font-medium">${money(lineTotal(item))}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
+              {viewReceiving.length > 0 && (
+                <div className="border border-border rounded-lg p-3">
+                  <p className="text-xs font-medium text-muted-foreground mb-2">Receiving history</p>
+                  <div className="space-y-1.5">
+                    {viewReceiving.map(ev => (
+                      <div key={ev.id} className="flex items-center justify-between gap-2 text-xs">
+                        <span className="flex items-center gap-1.5">
+                          <PackageCheck className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+                          {ev.received_date ? format(new Date(ev.received_date), 'MMM d, yyyy') : '—'}
+                          {ev.reference && <span className="text-muted-foreground">· {ev.reference}</span>}
+                        </span>
+                        <StatusBadge status={ev.status === 'received' ? 'fully_received' : ev.status} label={ev.status === 'received' ? 'Received' : undefined} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {viewDialog.status === 'closed' && (
+                <p className="text-xs text-muted-foreground">Order manually closed{viewDialog.closed_at ? ` on ${format(new Date(viewDialog.closed_at), 'MMM d, yyyy')}` : ''}.</p>
+              )}
             </div>
           )}
-          <DialogFooter><Button variant="outline" onClick={() => setViewDialog(null)}>Close</Button></DialogFooter>
+          <DialogFooter className="gap-2">
+            {viewDialog && viewDialog.status !== 'cancelled' && (
+              <Button variant="outline" onClick={toggleOrderClosed} disabled={closingOrder} className="mr-auto">
+                {viewDialog.status === 'closed' ? 'Reopen order' : 'Close order'}
+              </Button>
+            )}
+            <Button variant="outline" onClick={() => setViewDialog(null)}>Done</Button>
+            {viewDialog && !['fully_received', 'closed', 'cancelled', 'received'].includes(viewDialog.status) && (
+              <Button onClick={() => navigate('/dashboard/inventory/invoices', { state: { receiveOrderId: viewDialog.id, receiveLocationId: viewDialog.location_id } })}>
+                <PackageCheck className="w-4 h-4 mr-1" />Receive Order
+              </Button>
+            )}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

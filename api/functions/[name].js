@@ -366,6 +366,7 @@ async function handleFunction(name, req, client, user, body) {
           address: body.address || null,
           cash_drawer_amount: cleanOptionalMoney(body.cash_drawer_amount),
           timezone: cleanOptionalTimezone(body.timezone),
+          location_type: ['retail', 'roastery', 'hybrid'].includes(body.location_type) ? body.location_type : 'retail',
           is_active: true,
         })
         .select('*')
