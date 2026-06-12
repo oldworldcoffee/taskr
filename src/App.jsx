@@ -31,6 +31,7 @@ import ChecklistOverview from "@/pages/Dashboard";
 import ChecklistReview from "@/pages/ChecklistReview";
 import DashboardIssues from "@/pages/DashboardIssues";
 import DashboardEmployees from "@/pages/DashboardEmployees";
+import DashboardRoles from "@/pages/DashboardRoles";
 import DashboardSettings from "@/pages/DashboardSettings.jsx";
 import ChecklistEditor from "@/pages/ChecklistEditor";
 import SpreadsheetImport from "@/pages/SpreadsheetImport";
@@ -160,6 +161,7 @@ const AuthenticatedApp = () => {
           <Route path="/dashboard/review/:instanceId" element={<ChecklistReview />} />
           <Route path="/dashboard/issues" element={<DashboardIssues />} />
           <Route path="/dashboard/employees" element={<DashboardEmployees />} />
+          <Route path="/dashboard/roles" element={<DashboardRoles />} />
           <Route path="/dashboard/settings" element={<DashboardSettings />} />
           <Route path="/dashboard/checklist/:checklistId/edit" element={<ChecklistEditor />} />
           <Route path="/dashboard/import" element={<SpreadsheetImport />} />

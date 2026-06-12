@@ -25,6 +25,7 @@ import {
   PackageCheck,
   Search,
   Settings,
+  ShieldCheck,
   ShoppingCart,
   ShoppingBasket,
   Store,
@@ -104,6 +105,7 @@ const teamHubItems = [
 const primaryItems = [
   { path: "/dashboard/equipment", label: "Equipment", icon: Wrench, roles: ["admin", "manager"] },
   { path: "/dashboard/employees", label: "Employees", icon: Users, roles: ["admin", "manager"] },
+  { path: "/dashboard/roles", label: "Roles", icon: ShieldCheck, roles: ["admin"] },
   { path: "/dashboard/settings", label: "Settings", icon: Settings, roles: ["admin"] },
 ];
 

@@ -29,6 +29,9 @@ export const AuthProvider = ({ children }) => {
   const [authChecked, setAuthChecked] = useState(false);
   const [appPublicSettings] = useState({ public_settings: {} });
   const [allLocations, setAllLocations] = useState([]);
+  // The current user's per-(location, module) access rows. null = not yet loaded;
+  // [] = loaded with no overrides (or an auto-grant role that needs none).
+  const [moduleAccess, setModuleAccess] = useState(null);
   const authCheckedRef = useRef(false);
   const isAuthenticatedRef = useRef(false);
 
@@ -154,9 +157,34 @@ export const AuthProvider = ({ children }) => {
     return () => subscription.unsubscribe();
   }, [checkAppState, checkUserAuth]);
 
+  // Load the signed-in user's module-access matrix. Auto-grant roles
+  // (admin/manager/super_admin) need no rows. Re-runs when the user changes.
+  const refreshModuleAccess = useCallback(async () => {
+    const uid = user?.id;
+    if (!uid) {
+      setModuleAccess(null);
+      return;
+    }
+    if (['admin', 'manager', 'super_admin'].includes(user?.role)) {
+      setModuleAccess([]);
+      return;
+    }
+    try {
+      const rows = await base44.entities.UserLocationModuleAccess.filter({ user_id: uid });
+      setModuleAccess(rows || []);
+    } catch {
+      setModuleAccess([]);
+    }
+  }, [user?.id, user?.role]);
+
+  useEffect(() => {
+    refreshModuleAccess();
+  }, [refreshModuleAccess]);
+
   const logout = () => {
     setUser(null);
     setAllLocations([]);
+    setModuleAccess(null);
     setIsAuthenticated(false);
     base44.auth.logout();
   };
@@ -206,19 +234,48 @@ export const AuthProvider = ({ children }) => {
   const hasRoasteryLocation = allLocations.some(
     (loc) => ['roastery', 'hybrid'].includes(loc?.location_type)
   );
-  // Managers/admins always have feature access; others need an explicit grant.
-  const userHasFeature = useCallback((feature) => {
-    if (['admin', 'manager', 'super_admin'].includes(user?.role)) return true;
+  // Legacy global grant from users.feature_permissions. Used only as a transition
+  // fallback for users whose module-access matrix hasn't loaded / has no rows yet
+  // (mirrors the SQL has_module_access legacy branch). Removed once fully cut over.
+  const legacyHasFeature = useCallback((feature) => {
     const grant = (user?.feature_permissions || {})[feature];
     return grant === true || (grant && typeof grant === 'object' && grant.enabled === true);
-  }, [user?.role, user?.feature_permissions]);
-  // Roastery sub-permissions: view_production, manage_production,
-  // inventory_adjustments, reporting. Admins/managers get all.
-  const hasRoasteryPermission = useCallback((permission) => {
+  }, [user?.feature_permissions]);
+
+  // Per-(feature, location) gate. Managers/admins auto-grant; task_checklist is
+  // always on; otherwise resolve from the matrix (override wins, no row => no
+  // access for non-managers). locationId null => "enabled at ANY location".
+  const userHasFeatureAtLocation = useCallback((feature, locationId = null) => {
     if (['admin', 'manager', 'super_admin'].includes(user?.role)) return true;
-    const roastery = (user?.feature_permissions || {}).roastery;
-    return Boolean(roastery && typeof roastery === 'object' && roastery[permission]);
-  }, [user?.role, user?.feature_permissions]);
+    if (feature === 'task_checklist') return true;
+    const rows = moduleAccess;
+    if (!rows || rows.length === 0) return legacyHasFeature(feature);
+    if (!locationId) return rows.some((r) => r.module === feature && r.enabled);
+    const row = rows.find((r) => r.location_id === locationId && r.module === feature);
+    return row ? !!row.enabled : false;
+  }, [user?.role, moduleAccess, legacyHasFeature]);
+
+  // "Enabled at any accessible location" — back-compat shape used widely.
+  const userHasFeature = useCallback(
+    (feature) => userHasFeatureAtLocation(feature, null),
+    [userHasFeatureAtLocation]
+  );
+
+  // Roastery sub-permissions: view_production, manage_production,
+  // inventory_adjustments, reporting. Admins/managers get all. Optional
+  // locationId scopes the check to a single location.
+  const hasRoasteryPermission = useCallback((permission, locationId = null) => {
+    if (['admin', 'manager', 'super_admin'].includes(user?.role)) return true;
+    const rows = moduleAccess;
+    if (!rows || rows.length === 0) {
+      const roastery = (user?.feature_permissions || {}).roastery;
+      return Boolean(roastery && typeof roastery === 'object' && roastery[permission]);
+    }
+    const relevant = rows.filter(
+      (r) => r.module === 'roastery' && r.enabled && (!locationId || r.location_id === locationId)
+    );
+    return relevant.some((r) => r.roastery_perms && r.roastery_perms[permission]);
+  }, [user?.role, moduleAccess, user?.feature_permissions]);
 
   // The locations this user may access (admins/unassigned see all).
   const accessibleLocations = allLocations.filter((loc) => canAccessLocation(loc.id));
@@ -230,17 +287,19 @@ export const AuthProvider = ({ children }) => {
       company,
       locations: accessibleLocations,
       userHasFeature,
+      userHasFeatureAtLocation,
       role: user?.role,
     }),
-  [accessibleLocations, userHasFeature, user?.role]);
+  [accessibleLocations, userHasFeature, userHasFeatureAtLocation, user?.role]);
 
   const isFeatureEnabledAnywhere = useCallback((feature, company) =>
     computeFeatureAnywhere(feature, accessibleLocations, {
       company,
       userHasFeature,
+      userHasFeatureAtLocation,
       role: user?.role,
     }),
-  [accessibleLocations, userHasFeature, user?.role]);
+  [accessibleLocations, userHasFeature, userHasFeatureAtLocation, user?.role]);
 
   // Locations the user may access AND where `feature` is enabled. For module
   // location pickers, so a location with the feature toggled off drops out.
@@ -250,9 +309,10 @@ export const AuthProvider = ({ children }) => {
         company,
         locations: accessibleLocations,
         userHasFeature,
+        userHasFeatureAtLocation,
         role: user?.role,
       })),
-  [accessibleLocations, userHasFeature, user?.role]);
+  [accessibleLocations, userHasFeature, userHasFeatureAtLocation, user?.role]);
 
   return (
     <AuthContext.Provider value={{
@@ -268,6 +328,8 @@ export const AuthProvider = ({ children }) => {
       checkUserAuth,
       checkAppState,
       refreshLocations,
+      refreshModuleAccess,
+      moduleAccess,
       allLocations,
       accessibleLocations,
       companyId,
@@ -278,6 +340,7 @@ export const AuthProvider = ({ children }) => {
       featurePermissions,
       hasRoasteryLocation,
       userHasFeature,
+      userHasFeatureAtLocation,
       hasRoasteryPermission,
       isFeatureEnabledForLocation,
       isFeatureEnabledAnywhere,
