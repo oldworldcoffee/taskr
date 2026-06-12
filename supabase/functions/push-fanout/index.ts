@@ -1,9 +1,10 @@
 // Supabase Edge Function: push-fanout
 //
 // Triggered by Database Webhooks on INSERT into chat_messages, forum_posts, and
-// forum_comments. Resolves who should be notified (per the app's scope: DMs
-// always; chat/board posts only on @mention; board posts also on announcement),
-// looks up their Expo push tokens, and delivers via the Expo push service.
+// forum_comments. Resolves who should be notified (scope: DMs notify all
+// participants; chat channel/Global messages notify everyone in scope; board
+// posts notify on @mention or announcement), looks up their Expo push tokens +
+// browser subscriptions, and delivers via Expo push and Web Push.
 //
 // Deploy (from a machine with the Supabase CLI + the DEV project linked):
 //   supabase functions deploy push-fanout --project-ref psxytrplryzkrlzhxrhx
@@ -178,18 +179,35 @@ async function resolve(table: string, record: Record<string, any>) {
         data: { type: 'chat', dmChannelId: record.dm_channel_id },
       };
     }
-    // Channel message: only @mentioned users.
+    // Channel/Global message: notify everyone in scope (not just @mentions).
+    // Global (no location) -> whole company; a location channel -> that
+    // location's staff (users with no assigned_locations are admins/managers who
+    // see every channel, mirroring the app's access). Author always excluded.
+    const locId = record.location_id || null;
     const users = await companyUsers(companyId);
-    const tokens = mentionTokens(content);
     const recipients = users
-      .filter((u) => u.email.toLowerCase() !== author && isMentioned(u, tokens))
+      .filter((u) => u.email.toLowerCase() !== author)
+      .filter(
+        (u) => !locId || !u.assigned_locations?.length || u.assigned_locations.includes(locId)
+      )
       .map((u) => u.email.toLowerCase());
     if (recipients.length === 0) return null;
+
+    // Title shows which conversation it came from so the banner is self-explanatory.
+    let channelName = 'Global Chat';
+    if (locId) {
+      const { data: loc } = await supabase
+        .from('locations')
+        .select('name')
+        .eq('id', locId)
+        .maybeSingle();
+      channelName = loc?.name || 'Channel';
+    }
     return {
       recipients,
-      title: `${authorName} mentioned you`,
+      title: `${authorName} · ${channelName}`,
       body: truncate(content),
-      data: { type: 'chat', locationId: record.location_id || null },
+      data: { type: 'chat', locationId: locId },
     };
   }
 
