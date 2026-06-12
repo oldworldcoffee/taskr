@@ -125,10 +125,17 @@ async function companyUsers(companyId: string) {
 
 async function tokensForEmails(emails: string[]) {
   if (emails.length === 0) return [];
-  const { data } = await supabase
+  // device_push_tokens is the mobile-only table and may not exist in every
+  // project (e.g. a web-only prod). Treat any error as "no mobile tokens" so the
+  // web-push path still runs.
+  const { data, error } = await supabase
     .from('device_push_tokens')
     .select('token, user_email')
     .in('user_email', emails);
+  if (error) {
+    console.error('device_push_tokens lookup skipped', error.message || error);
+    return [];
+  }
   return (data || [])
     .map((r) => r.token)
     .filter((t) => typeof t === 'string' && /^Expo(nent)?PushToken\[/.test(t));
