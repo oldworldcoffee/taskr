@@ -188,7 +188,10 @@ async function resolve(table: string, record: Record<string, any>) {
   const authorName = record.author_name || 'Someone';
 
   if (table === 'chat_messages') {
-    const content = record.content || '';
+    // Attachment-only messages have empty content; show a placeholder body.
+    const content =
+      record.content ||
+      (Array.isArray(record.attachments) && record.attachments.length > 0 ? '📎 Attachment' : '');
     if (record.dm_channel_id) {
       // DM: notify all participants except the sender.
       const recipients = (record.dm_participants || [])

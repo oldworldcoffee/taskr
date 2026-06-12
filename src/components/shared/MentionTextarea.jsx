@@ -8,7 +8,7 @@ import { FileText } from "lucide-react";
  *   users: array of {email, full_name}
  *   articles: array of {id, title}
  */
-export default function MentionTextarea({ value, onChange, placeholder, rows = 4, users = [], articles = [], onKeyDown: externalKeyDown }) {
+export default function MentionTextarea({ value, onChange, placeholder, rows = 4, users = [], articles = [], onKeyDown: externalKeyDown, onPaste }) {
   const [mentionQuery, setMentionQuery] = useState(null);
   const [mentionStart, setMentionStart] = useState(null);
   const [dropdownIndex, setDropdownIndex] = useState(0);
@@ -91,6 +91,7 @@ export default function MentionTextarea({ value, onChange, placeholder, rows = 4
         defaultValue={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
+        onPaste={onPaste}
         placeholder={placeholder}
         rows={rows}
         className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
