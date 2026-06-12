@@ -24,6 +24,7 @@ import {
 } from '../_lib/inventory.js';
 import { handleRoasteryFunction, isRoasteryFunction, runRoasteryDailySnapshots } from '../_lib/roastery.js';
 import { handleNotificationFunction, isNotificationFunction } from '../_lib/notifications.js';
+import { handleFinancialFunction, isFinancialFunction } from '../_lib/financial.js';
 
 const CRON_FUNCTION_NAMES = new Set(['inventoryRunDailySnapshots', 'runDailySnapshots']);
 
@@ -265,6 +266,10 @@ async function handleFunction(name, req, client, user, body) {
 
   if (isNotificationFunction(name)) {
     return handleNotificationFunction(name, req, client, user, body);
+  }
+
+  if (isFinancialFunction(name)) {
+    return handleFinancialFunction(name, req, client, user, body);
   }
 
   switch (name) {

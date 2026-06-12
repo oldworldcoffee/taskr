@@ -84,6 +84,15 @@ const roasteryItems = [
   { path: "/dashboard/roastery/settings", label: "Settings", icon: Settings },
 ];
 
+const financialItems = [
+  { path: "/dashboard/financial", label: "Overview", icon: LayoutDashboard, exact: true },
+  { path: "/dashboard/financial/schedule", label: "Schedule Builder", icon: CalendarDays },
+  { path: "/dashboard/financial/forecast", label: "Monthly Forecast", icon: BarChart3 },
+  { path: "/dashboard/financial/sales-insights", label: "Sales Insights", icon: DollarSign },
+  { path: "/dashboard/financial/labor-settings", label: "Labor Settings", icon: Calculator },
+  { path: "/dashboard/financial/settings", label: "Settings", icon: Settings },
+];
+
 const teamHubItems = [
   { path: "/dashboard/todos", label: "To-Dos", icon: ListChecks, roles: ["admin", "manager"] },
   { path: "/dashboard/knowledge-base", label: "Knowledge Base", icon: BookOpen, roles: ["admin", "manager", "supervisor"] },
@@ -207,12 +216,14 @@ function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, un
   // explicit grant; a roastery/hybrid location auto-enables roastery for staff.
   const inventoryEnabled = company?.enabled_features?.includes("inventory") && userHasFeature("inventory");
   const roasteryEnabled = userHasFeature("roastery") || (hasRoasteryLocation && ["admin", "manager", "super_admin"].includes(role));
+  const financialEnabled = userHasFeature("financial");
   const visibleTeamHubItems = teamHubItems.filter((item) => canSeeItem(item, role));
   const visiblePrimaryItems = primaryItems.filter((item) => canSeeItem(item, role));
   const isItemActive = (item) => item.exact ? isExact(item.path) : isActive(item.path);
   const checklistsActive = isActive("/dashboard/checklists") || isActive("/dashboard/checklist") || isActive("/dashboard/issues") || isActive("/dashboard/deposits") || isActive("/dashboard/review");
   const inventoryActive = isActive("/dashboard/inventory");
   const roasteryActive = isActive("/dashboard/roastery");
+  const financialActive = isActive("/dashboard/financial");
   const teamHubActive = visibleTeamHubItems.some(isItemActive);
   const teamHubBadge = (unreadChat || 0) + (unreadForum || 0);
 
@@ -263,6 +274,21 @@ function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, un
           icon={Coffee}
           items={roasteryItems}
           active={roasteryActive}
+          isItemActive={isItemActive}
+          onNavigate={onNavigate}
+          unreadChat={unreadChat}
+          unreadForum={unreadForum}
+          markChatSeen={markChatSeen}
+          markForumSeen={markForumSeen}
+        />
+      )}
+
+      {financialEnabled && (
+        <NavGroup
+          label="Financial Management"
+          icon={DollarSign}
+          items={financialItems}
+          active={financialActive}
           isItemActive={isItemActive}
           onNavigate={onNavigate}
           unreadChat={unreadChat}

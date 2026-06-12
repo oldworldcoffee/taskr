@@ -71,6 +71,14 @@ import RoasteryPricingCalculator from "@/pages/roastery/PricingCalculator.jsx";
 import RoasteryInvoices from "@/pages/roastery/Invoices.jsx";
 import RoasteryReports from "@/pages/roastery/Reports.jsx";
 import RoasterySettings from "@/pages/roastery/Settings.jsx";
+import FinancialLayout from "@/components/financial/FinancialLayout";
+import FinancialDashboard from "@/pages/financial/Dashboard.jsx";
+import FinancialScheduleBuilder from "@/pages/financial/ScheduleBuilder.jsx";
+import FinancialMonthlyForecast from "@/pages/financial/MonthlyForecast.jsx";
+import FinancialSalesInsights from "@/pages/financial/SalesInsights.jsx";
+import FinancialLaborSettings from "@/pages/financial/LaborSettings.jsx";
+import FinancialSettings from "@/pages/financial/Settings.jsx";
+import FinancialSquareCallback from "@/pages/financial/SquareCallback.jsx";
 
 import SuperAdminLayout from "@/components/layout/SuperAdminLayout";
 import SuperAdminOverview from "@/pages/super-admin/Overview";
@@ -173,6 +181,15 @@ const AuthenticatedApp = () => {
             <Route path="invoices" element={<RoasteryInvoices />} />
             <Route path="reports" element={<RoasteryReports />} />
             <Route path="settings" element={<RoasterySettings />} />
+          </Route>
+          <Route path="/dashboard/financial" element={<FinancialLayout />}>
+            <Route index element={<FinancialDashboard />} />
+            <Route path="schedule" element={<FinancialScheduleBuilder />} />
+            <Route path="forecast" element={<FinancialMonthlyForecast />} />
+            <Route path="sales-insights" element={<FinancialSalesInsights />} />
+            <Route path="labor-settings" element={<FinancialLaborSettings />} />
+            <Route path="settings" element={<FinancialSettings />} />
+            <Route path="square-callback" element={<FinancialSquareCallback />} />
           </Route>
           <Route element={<InventoryRoute />}>
             <Route path="/dashboard/inventory" element={<InventoryLayout />}>
