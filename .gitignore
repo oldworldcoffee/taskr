@@ -30,3 +30,9 @@ dist-ssr
 .env
 .vite
 .vercel
+
+# Mobile app — lives in its own git repository (taskr-mobile)
+/mobile
+
+# Supabase CLI scratch
+supabase/.temp/
