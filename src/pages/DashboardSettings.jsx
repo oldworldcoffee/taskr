@@ -11,6 +11,8 @@ import { Plus, MapPin, Pencil, Trash2, Building2, ImageIcon, CreditCard, DollarS
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import TimezoneSelect, { TIMEZONE_UNSET, getBrowserTimezone } from "@/components/shared/TimezoneSelect";
+import PushToggle from "@/components/shared/PushToggle";
+import { Bell } from "lucide-react";
 import { toast } from "sonner";
 
 export default function DashboardSettings() {
@@ -529,6 +531,16 @@ export default function DashboardSettings() {
           </CardContent>
         </Card>
       )}
+
+      {/* Notifications */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2"><Bell className="h-4 w-4" /> Notifications</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <PushToggle />
+        </CardContent>
+      </Card>
 
       {/* Delete Location Dialog */}
       <Dialog open={deleteLocDialog} onOpenChange={setDeleteLocDialog}>

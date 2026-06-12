@@ -146,22 +146,21 @@ export async function completeOccurrence({ occurrence, todo, user }) {
     completed_by_email: user.email,
   });
 
+  // Dispatch notifications server-side: the function creates the in-app rows and
+  // fans out to email + web push for each notify recipient. Best-effort — a
+  // delivery failure must not block marking the to-do done.
   const recipients = (todo?.notify_emails || []).filter(
     (email) => email && email !== user.email
   );
   if (recipients.length > 0) {
-    const doneBy = user.full_name || user.email;
-    await base44.entities.Notification.bulkCreate(
-      recipients.map((email) => ({
-        company_id: todo.company_id,
-        recipient_email: email,
-        type: "todo_completed",
-        title: "To-Do completed",
-        body: `${doneBy} completed "${todo.name}"`,
-        link: "/dashboard/todos",
-        source_id: occurrence.id,
-      }))
-    );
+    try {
+      await base44.functions.invoke("notifyTodoCompletion", {
+        todoId: todo.id,
+        occurrenceId: occurrence.id,
+      });
+    } catch (e) {
+      console.error("notifyTodoCompletion failed", e);
+    }
   }
 
   return updated;
