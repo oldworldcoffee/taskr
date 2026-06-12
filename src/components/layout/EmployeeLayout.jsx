@@ -61,7 +61,7 @@ export default function EmployeeLayout() {
   });
   const [searchOpen, setSearchOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const { unreadChat, unreadForum, markChatSeen, markForumSeen } = useUnreadCounts();
+  const { unreadChat, unreadForum, markForumSeen } = useUnreadCounts();
 
   const isActive = (path) =>
     path === "/home" ? location.pathname === "/home" : location.pathname.startsWith(path);
@@ -152,10 +152,7 @@ export default function EmployeeLayout() {
               label="Chat"
               active={isActive("/chat")}
               badge={unreadChat}
-              onClick={() => {
-                markChatSeen();
-                closeMenu();
-              }}
+              onClick={closeMenu}
             />
             <NavRow to="/directory" icon={Users} label="Team" active={isActive("/directory")} onClick={closeMenu} />
             <button

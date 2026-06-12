@@ -115,14 +115,14 @@ function NavLinkItem({
   onNavigate,
   unreadChat,
   unreadForum,
-  markChatSeen,
   markForumSeen,
   compact = false,
 }) {
   const Icon = item.icon;
   const badge = item.badge === "chat" ? unreadChat : item.badge === "forum" ? unreadForum : 0;
   const handleClick = () => {
-    if (item.badge === "chat") markChatSeen?.();
+    // Chat clears per-thread as the user reads each conversation (so the badge
+    // shows which threads are still new); only forum is bulk-cleared here.
     if (item.badge === "forum") markForumSeen?.();
     onNavigate?.();
   };

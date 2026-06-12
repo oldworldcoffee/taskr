@@ -12,6 +12,7 @@
 // URL. SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are injected automatically.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import webpush from 'npm:web-push@3.6.7';
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 
@@ -19,6 +20,67 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 );
+
+// Web Push (browser) delivery. Uses the same VAPID keypair the web app subscribes
+// with. Optional: if the VAPID secrets aren't set on this function, web push is
+// silently skipped (mobile Expo push is unaffected).
+let vapidReady = false;
+try {
+  const pub = Deno.env.get('VAPID_PUBLIC_KEY');
+  const priv = Deno.env.get('VAPID_PRIVATE_KEY');
+  if (pub && priv) {
+    webpush.setVapidDetails(
+      Deno.env.get('VAPID_SUBJECT') || 'mailto:notifications@taskrapp.io',
+      pub,
+      priv
+    );
+    vapidReady = true;
+  }
+} catch (e) {
+  console.error('VAPID setup failed', (e as Error)?.message || e);
+}
+
+// Map a resolved notification's data payload to the in-app deep-link path the
+// service worker (public/sw.js) opens on click.
+function webUrlFor(data: Record<string, any>): string {
+  if (data?.type === 'chat') {
+    if (data.dmChannelId) return `/Chat?dm=${encodeURIComponent(data.dmChannelId)}`;
+    return `/Chat?channel=${data.locationId || 'global'}`;
+  }
+  if (data?.type === 'forum') return '/Forum';
+  return '/';
+}
+
+async function sendWebPush(
+  recipients: string[],
+  payload: { title: string; body: string; url: string }
+) {
+  if (!vapidReady || recipients.length === 0) return;
+  const { data: subs } = await supabase
+    .from('push_subscriptions')
+    .select('id, endpoint, p256dh, auth, user_email')
+    .in('user_email', recipients);
+  if (!subs?.length) return;
+
+  const body = JSON.stringify(payload);
+  await Promise.all(
+    subs.map(async (sub) => {
+      try {
+        await webpush.sendNotification(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+          body
+        );
+      } catch (err: any) {
+        // 404/410 = dead subscription; clean it up. Others: log and move on.
+        if (err?.statusCode === 404 || err?.statusCode === 410) {
+          await supabase.from('push_subscriptions').delete().eq('id', sub.id);
+        } else {
+          console.error('web-push send failed', err?.statusCode || '', err?.message || '');
+        }
+      }
+    })
+  );
+}
 
 type WebhookPayload = {
   type: 'INSERT' | 'UPDATE' | 'DELETE';
@@ -189,9 +251,9 @@ Deno.serve(async (req) => {
       return new Response('no recipients', { status: 200 });
     }
 
+    // Deliver to both transports. A recipient may have a mobile token, a browser
+    // subscription, or both — so don't bail early when one is empty.
     const tokens = await tokensForEmails(resolved.recipients);
-    if (tokens.length === 0) return new Response('no tokens', { status: 200 });
-
     const messages = tokens.map((to) => ({
       to,
       sound: 'default',
@@ -199,9 +261,18 @@ Deno.serve(async (req) => {
       body: resolved.body,
       data: resolved.data,
     }));
-    await sendExpo(messages);
+    const url = webUrlFor(resolved.data);
 
-    return new Response(JSON.stringify({ sent: messages.length }), {
+    await Promise.all([
+      sendExpo(messages),
+      sendWebPush(resolved.recipients, {
+        title: resolved.title,
+        body: resolved.body,
+        url,
+      }),
+    ]);
+
+    return new Response(JSON.stringify({ expo: messages.length }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
