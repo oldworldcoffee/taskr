@@ -25,6 +25,7 @@ import {
 import { handleRoasteryFunction, isRoasteryFunction, runRoasteryDailySnapshots } from '../_lib/roastery.js';
 import { handleNotificationFunction, isNotificationFunction } from '../_lib/notifications.js';
 import { handleFinancialFunction, isFinancialFunction } from '../_lib/financial.js';
+import { handleRbacFunction, isRbacFunction, materializeMatrixFromRole } from '../_lib/rbac.js';
 
 const CRON_FUNCTION_NAMES = new Set(['inventoryRunDailySnapshots', 'runDailySnapshots']);
 
@@ -169,13 +170,29 @@ async function syncCommissaryVendorForLocation(client, companyId, location, isCo
   }
 }
 
-function companyInvitePayload(user, body) {
+// Resolve a (possibly custom) invite role to its base role string + role_id.
+// Custom roles are pinned to one of the 5 base roles; we trust the role row's
+// base_role, never the client-supplied role string, to prevent escalation.
+async function resolveInviteRole(client, user, body) {
+  if (body.role_id) {
+    const { data: role, error } = await client.from('roles').select('*').eq('id', body.role_id).maybeSingle();
+    if (error) throw error;
+    if (!role) throw httpError(400, 'Invalid role');
+    if (!role.is_system && role.company_id !== user.company_id) {
+      throw httpError(403, 'That role is not available for this company');
+    }
+    return { role: role.base_role, role_id: role.is_system ? null : role.id };
+  }
+  return { role: body.role || 'employee', role_id: null };
+}
+
+function companyInvitePayload(user, body, resolved) {
   if (!user.company_id) throw httpError(400, 'No company associated with your account');
 
   const email = cleanEmail(body.email);
   if (!email) throw httpError(400, 'Email is required');
 
-  const role = body.role || 'employee';
+  const role = resolved?.role || body.role || 'employee';
   if (!COMPANY_INVITE_ROLES.has(role)) throw httpError(400, 'Invalid invite role');
   if (user.role === 'manager' && role === 'admin') {
     throw httpError(403, 'Managers cannot invite company admins');
@@ -185,6 +202,7 @@ function companyInvitePayload(user, body) {
     email,
     name: String(body.name || '').trim(),
     role,
+    role_id: resolved?.role_id || null,
     company_id: user.company_id,
     assigned_locations: cleanAssignedLocations(body.assigned_locations),
     invited_by: user.email,
@@ -340,6 +358,10 @@ async function handleFunction(name, req, client, user, body) {
     return handleFinancialFunction(name, req, client, user, body);
   }
 
+  if (isRbacFunction(name)) {
+    return handleRbacFunction(name, req, client, user, body);
+  }
+
   switch (name) {
     case 'cleanupPendingInvite': {
       const email = (body.email || user.email || '').trim();
@@ -356,6 +378,7 @@ async function handleFunction(name, req, client, user, body) {
         .update({
           company_id: invite.company_id,
           role: invite.role || 'employee',
+          role_id: invite.role_id || null,
           assigned_locations: invite.assigned_locations || [],
           full_name: invite.name || user.full_name,
         })
@@ -363,6 +386,15 @@ async function handleFunction(name, req, client, user, body) {
         .select('*')
         .single();
       if (updateError) throw updateError;
+
+      // Seed the per-location module matrix from the invited role's template.
+      await materializeMatrixFromRole(client, {
+        userId: user.id,
+        companyId: invite.company_id,
+        role: invite.role || 'employee',
+        roleId: invite.role_id || null,
+        assignedLocations: invite.assigned_locations || [],
+      });
 
       await client.from('pending_invites').delete().ilike('email', email);
       return { success: true, user: updated };
@@ -378,7 +410,8 @@ async function handleFunction(name, req, client, user, body) {
 
     case 'inviteUser': {
       requireManagerOrAdmin(user);
-      const invite = companyInvitePayload(user, body);
+      const resolved = await resolveInviteRole(client, user, body);
+      const invite = companyInvitePayload(user, body, resolved);
       await validateInviteLocations(client, invite);
       const pendingInvite = await upsertPendingCompanyInvite(client, invite);
       await maybeInviteUser(client, req, invite.email, {

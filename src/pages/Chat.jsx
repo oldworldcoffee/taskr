@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { base44 } from "@/api/base44Client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/AuthContext";
@@ -6,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input"; // still used in NewDMDialog search
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Globe, Send, Plus, MessageSquare, ChevronDown, ChevronRight, X, ChevronLeft, Bell } from "lucide-react";
-import { getChannelLastSeen, markChannelSeen, markAllChatSeen } from "@/hooks/useUnreadCounts";
+import { getChannelLastSeen, markChannelSeen } from "@/hooks/useUnreadCounts";
 import { formatDistanceToNow } from "date-fns";
 import UserAvatar from "@/components/shared/UserAvatar";
 import MentionTextarea from "@/components/shared/MentionTextarea";
@@ -456,11 +457,29 @@ export default function Chat() {
   const [channelsExpanded, setChannelsExpanded] = useState(true);
   const [dmsExpanded, setDmsExpanded] = useState(true);
 
-  // Opening the Chat page clears the module unread badge, regardless of how the
-  // user arrived (nav link, direct URL, or clicking a notification/alert).
+  // Deep-link straight to a thread via ?dm=<dmChannelId> or ?channel=<id|global>
+  // (the dm id encodes participants as sorted emails joined by "|"), then strip
+  // the param so it doesn't re-fire or linger in the URL.
+  const [searchParams, setSearchParams] = useSearchParams();
   useEffect(() => {
-    markAllChatSeen();
-  }, []);
+    const dm = searchParams.get("dm");
+    const channel = searchParams.get("channel");
+    if (!dm && !channel) return;
+    if (dm) {
+      const participants = dm.split("|");
+      setDmChannels((prev) =>
+        prev.find((c) => c.id === dm)
+          ? prev
+          : [...prev, { id: dm, participants, name: getDMChannelName(participants, user?.email) }]
+      );
+      setActiveChannel(dm);
+      markChannelSeen(dm);
+    } else {
+      setActiveChannel(channel);
+      markChannelSeen(channel);
+    }
+    setSearchParams({}, { replace: true });
+  }, [searchParams, user?.email]);
 
   // Fetch all recent messages for unread feed
   const { data: allRecentMessages = [] } = useQuery({
@@ -501,6 +520,21 @@ export default function Chat() {
     const lastSeen = getChannelLastSeen(chId);
     return new Date(m.created_date) > lastSeen;
   }).length;
+
+  // On first entry (no explicit thread deep-link), if there are unread chats land
+  // on the Unread feed so the user can see WHICH threads are new and jump in —
+  // instead of guessing from the channel list. Reading a thread clears its badge.
+  const didDefaultRef = useRef(false);
+  useEffect(() => {
+    if (didDefaultRef.current) return;
+    if (searchParams.get("dm") || searchParams.get("channel")) {
+      didDefaultRef.current = true; // a deep-link wins; don't override it
+      return;
+    }
+    if (allRecentMessages.length === 0) return; // wait for data to load
+    didDefaultRef.current = true;
+    if (unreadCount > 0 && !activeChannel) setActiveChannel("__unread__");
+  }, [allRecentMessages, unreadCount, searchParams]);
 
   const handleSelectChannel = (id) => {
     if (id !== "__unread__") {

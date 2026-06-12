@@ -35,7 +35,7 @@ function DashCard({ to, icon: Icon, label, value, sub, accent, onClick }) {
 
 export default function EmployeeDashboard() {
   const { user } = useAuth();
-  const { unreadChat, unreadForum, markChatSeen, markForumSeen } = useUnreadCounts();
+  const { unreadChat, unreadForum, markForumSeen } = useUnreadCounts();
   const { dueCount } = useMyTodos();
 
   const assignedLocations = user?.assigned_locations || [];
@@ -102,7 +102,6 @@ export default function EmployeeDashboard() {
           label="Chat"
           sub={unreadChat > 0 ? `${unreadChat} new` : "Up to date"}
           value={unreadChat}
-          onClick={markChatSeen}
         />
       </div>
 

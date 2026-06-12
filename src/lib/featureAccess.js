@@ -49,9 +49,18 @@ function companyAllows(feature, { company, locations = [] } = {}) {
   }
 }
 
-// User-level gate, preserving today's behavior per module.
-function userAllows(feature, { userHasFeature, role, locations = [] } = {}) {
-  const can = (f) => (typeof userHasFeature === 'function' ? userHasFeature(f) : false);
+// User-level gate. Location-aware: prefers a per-location predicate
+// (userHasFeatureAtLocation) bound to `locationId`, falling back to the global
+// userHasFeature for callers that don't pass a location (e.g. brand-new company
+// with no locations yet).
+function userAllows(feature, { userHasFeatureAtLocation, userHasFeature, role, locationId = null, locations = [] } = {}) {
+  const can = (f) => {
+    if (typeof userHasFeatureAtLocation === 'function' && locationId != null) {
+      return userHasFeatureAtLocation(f, locationId);
+    }
+    if (typeof userHasFeature === 'function') return userHasFeature(f);
+    return false;
+  };
   switch (feature) {
     case 'inventory':
       return can('inventory');
@@ -86,21 +95,24 @@ export function isFeatureEnabledForLocation(feature, location, ctx = {}) {
   return (
     companyAllows(feature, ctx) &&
     locationFlagEnabled(feature, location) &&
-    userAllows(feature, ctx)
+    userAllows(feature, { ...ctx, locationId: location?.id })
   );
 }
 
-// True if the feature is enabled at ANY of the given (accessible) locations.
-// Used for nav/route visibility; per-location filtering happens inside modules.
+// True if the feature is enabled at ANY of the given (accessible) locations,
+// checking the per-location user grant at each. Used for nav/route visibility;
+// per-location filtering happens inside modules.
 export function isFeatureEnabledAnywhere(feature, locations = [], ctx = {}) {
   const ctxWithLocations = { ...ctx, locations };
-  if (!companyAllows(feature, ctxWithLocations) || !userAllows(feature, ctxWithLocations)) {
-    return false;
-  }
+  if (!companyAllows(feature, ctxWithLocations)) return false;
   if (!locations.length) {
-    // No locations yet: fall back to the company/user gate (don't hide on a
+    // No locations yet: fall back to the global user gate (don't hide on a
     // brand-new company before any location exists).
-    return true;
+    return userAllows(feature, ctxWithLocations);
   }
-  return locations.some((loc) => locationFlagEnabled(feature, loc));
+  return locations.some(
+    (loc) =>
+      locationFlagEnabled(feature, loc) &&
+      userAllows(feature, { ...ctxWithLocations, locationId: loc?.id })
+  );
 }
