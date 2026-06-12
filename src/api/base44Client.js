@@ -9,6 +9,10 @@ const ENTITY_TABLES = {
   ChecklistInstance: 'checklist_instances',
   Company: 'companies',
   Equipment: 'equipment',
+  FinancialLaborSettings: 'financial_labor_settings',
+  FinancialSchedule: 'financial_schedules',
+  FinancialShift: 'financial_shifts',
+  FinancialSalesCache: 'financial_sales_cache',
   ForumBoard: 'forum_boards',
   ForumComment: 'forum_comments',
   ForumPost: 'forum_posts',
@@ -60,6 +64,10 @@ const ENTITY_TABLES = {
 
 const COMPANY_SCOPED_ENTITIES = new Set([
   'CommissaryFulfillment',
+  'FinancialLaborSettings',
+  'FinancialSchedule',
+  'FinancialShift',
+  'FinancialSalesCache',
   'Notification',
   'Todo',
   'TodoGroup',

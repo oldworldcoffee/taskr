@@ -88,6 +88,10 @@ const FeatureAccessSelector = ({ value, onChange }) => {
         <span className="text-sm">Inventory</span>
       </label>
       <label className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-muted/40 cursor-pointer">
+        <Checkbox checked={!!features.financial} onCheckedChange={(c) => onChange({ ...features, financial: !!c })} />
+        <span className="text-sm">Financial Management</span>
+      </label>
+      <label className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-muted/40 cursor-pointer">
         <Checkbox checked={!!roastery.enabled} onCheckedChange={(c) => onChange({ ...features, roastery: { ...roastery, enabled: !!c } })} />
         <span className="text-sm">Roastery</span>
       </label>
