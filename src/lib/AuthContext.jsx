@@ -2,6 +2,10 @@ import React, { createContext, useState, useContext, useEffect, useCallback, use
 import { base44 } from '@/api/base44Client';
 import { supabase } from '@/api/supabaseClient';
 import { enrichLocationsWithInventorySettings, isCommissaryLocation } from '@/lib/inventoryLocations';
+import {
+  isFeatureEnabledForLocation as computeFeatureForLocation,
+  isFeatureEnabledAnywhere as computeFeatureAnywhere,
+} from '@/lib/featureAccess';
 
 const AuthContext = createContext();
 
@@ -106,6 +110,20 @@ export const AuthProvider = ({ children }) => {
     await checkUserAuth({ showLoading: true });
   }, [checkUserAuth]);
 
+  // Re-fetch just the company's locations (and their feature flags) without a
+  // full auth round-trip. Call after editing a location so nav gating reflects
+  // toggle changes immediately.
+  const refreshLocations = useCallback(async () => {
+    const cid = user?.company_id;
+    if (!cid) return;
+    try {
+      const locations = await loadCompanyLocations(cid);
+      setAllLocations(locations);
+    } catch {
+      /* keep prior locations on failure */
+    }
+  }, [user?.company_id]);
+
   useEffect(() => {
     checkAppState();
 
@@ -202,6 +220,40 @@ export const AuthProvider = ({ children }) => {
     return Boolean(roastery && typeof roastery === 'object' && roastery[permission]);
   }, [user?.role, user?.feature_permissions]);
 
+  // The locations this user may access (admins/unassigned see all).
+  const accessibleLocations = allLocations.filter((loc) => canAccessLocation(loc.id));
+
+  // Unified gating: company AND location AND user. Callers pass `company`
+  // (company-info, holds enabled_features) since that lives in a separate query.
+  const isFeatureEnabledForLocation = useCallback((feature, location, company) =>
+    computeFeatureForLocation(feature, location, {
+      company,
+      locations: accessibleLocations,
+      userHasFeature,
+      role: user?.role,
+    }),
+  [accessibleLocations, userHasFeature, user?.role]);
+
+  const isFeatureEnabledAnywhere = useCallback((feature, company) =>
+    computeFeatureAnywhere(feature, accessibleLocations, {
+      company,
+      userHasFeature,
+      role: user?.role,
+    }),
+  [accessibleLocations, userHasFeature, user?.role]);
+
+  // Locations the user may access AND where `feature` is enabled. For module
+  // location pickers, so a location with the feature toggled off drops out.
+  const accessibleLocationsForFeature = useCallback((feature, company) =>
+    accessibleLocations.filter((loc) =>
+      computeFeatureForLocation(feature, loc, {
+        company,
+        locations: accessibleLocations,
+        userHasFeature,
+        role: user?.role,
+      })),
+  [accessibleLocations, userHasFeature, user?.role]);
+
   return (
     <AuthContext.Provider value={{
       user,
@@ -215,7 +267,9 @@ export const AuthProvider = ({ children }) => {
       navigateToLogin,
       checkUserAuth,
       checkAppState,
+      refreshLocations,
       allLocations,
+      accessibleLocations,
       companyId,
       canAccessLocation,
       canAccessCommissary,
@@ -224,7 +278,10 @@ export const AuthProvider = ({ children }) => {
       featurePermissions,
       hasRoasteryLocation,
       userHasFeature,
-      hasRoasteryPermission
+      hasRoasteryPermission,
+      isFeatureEnabledForLocation,
+      isFeatureEnabledAnywhere,
+      accessibleLocationsForFeature
     }}>
       {children}
     </AuthContext.Provider>

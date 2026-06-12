@@ -174,15 +174,21 @@ export function useUnreadCounts() {
   }, [recentPosts, user?.email, seenStateVersion]);
 
   const markChatSeen = (channelId, seenAt) => {
-    const map = getLastSeenMap();
     if (channelId) {
+      const map = getLastSeenMap();
       map[channelId] = toSeenISOString(seenAt);
-    } else {
-      map[ALL_CHAT_CHANNELS] = toSeenISOString(seenAt);
+      persistLastSeenMap(map);
+      notifySeenStateChanged();
+      return;
     }
-    persistLastSeenMap(map);
-    notifySeenStateChanged();
-    if (!channelId) setUnreadChat(0);
+    // Mark everything seen. Cover the newest loaded message too, so a just-
+    // arrived message isn't left "unread" if the client clock lags the server.
+    const newest = recentMessages.reduce((acc, m) => {
+      const d = safeDate(m.created_date);
+      return d && (!acc || d > acc) ? d : acc;
+    }, safeDate(seenAt));
+    markAllChatSeen(newest);
+    setUnreadChat(0);
   };
 
   const markForumSeen = () => {
@@ -206,5 +212,19 @@ export function markChannelSeen(channelId, seenAt) {
   const map = getLastSeenMap();
   map[channelId] = toSeenISOString(seenAt);
   persistLastSeenMap(map);
+  notifySeenStateChanged();
+}
+
+// Mark every chat channel seen up to `seenAt` (defaults to now). Never moves the
+// mark backwards. Called when the user opens the Chat page so the module unread
+// badge clears no matter how they got there (nav link, direct URL, alert click).
+export function markAllChatSeen(seenAt) {
+  const map = getLastSeenMap();
+  const prev = safeDate(map[ALL_CHAT_CHANNELS]);
+  const next = safeDate(seenAt) || new Date();
+  if (!prev || next > prev) {
+    map[ALL_CHAT_CHANNELS] = next.toISOString();
+    persistLastSeenMap(map);
+  }
   notifySeenStateChanged();
 }

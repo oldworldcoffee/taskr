@@ -101,6 +101,74 @@ function cleanOptionalTimezone(value) {
   }
 }
 
+const LOCATION_FEATURE_FLAGS = [
+  'is_task_checklist_enabled',
+  'is_inventory_enabled',
+  'is_roastery_enabled',
+  'is_financial_enabled',
+];
+
+// Whitelist of columns the location control panel may write.
+const LOCATION_PATCH_FIELDS = [
+  'name', 'address', 'location_type', 'is_active', 'timezone', 'cash_drawer_amount',
+  'primary_manager_user_id', 'secondary_manager_user_id', 'notes',
+  'is_commissary', 'preferred_stock_weeks', 'inventory_settings_json', 'financial_settings_json',
+  ...LOCATION_FEATURE_FLAGS,
+];
+
+// Port of the inventory Settings commissary-vendor sync, scoped to ONE location.
+// When a location becomes a commissary, ensure a matching commissary vendor exists;
+// when it stops, deactivate the auto-created vendor.
+async function syncCommissaryVendorForLocation(client, companyId, location, isCommissary) {
+  const { data: vendors, error } = await client
+    .from('inventory_vendors')
+    .select('*')
+    .eq('company_id', companyId);
+  if (error) throw error;
+
+  const lowerName = (location.name || '').toLowerCase();
+  const existing = (vendors || []).find((v) => v.commissary_location_id === location.id)
+    || (vendors || []).find((v) => v.is_commissary && (v.name || '').toLowerCase() === lowerName);
+
+  if (isCommissary) {
+    const { data: activeLocs } = await client
+      .from('locations')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('is_active', true);
+    const activeLocationIds = (activeLocs || []).map((l) => l.id);
+    const payload = {
+      company_id: companyId,
+      commissary_location_id: location.id,
+      name: location.name,
+      order_type: existing?.order_type || 'email',
+      address: location.address || existing?.address || null,
+      notes: existing?.notes || 'Auto-created from commissary location',
+      is_active: true,
+      is_commissary: true,
+      authorized_location_ids: existing?.authorized_location_ids?.length > 0 ? existing.authorized_location_ids : activeLocationIds,
+      location_settings: existing?.location_settings || [],
+      default_order_email: existing?.default_order_email || '',
+      default_cc_email: existing?.default_cc_email || '',
+      default_min_order_type: existing?.default_min_order_type || 'none',
+      default_min_order_value: existing?.default_min_order_value ?? null,
+      default_delivery_days: existing?.default_delivery_days || [],
+      delivery_days: existing?.delivery_days || [],
+    };
+    if (existing) {
+      await client.from('inventory_vendors').update(payload).eq('id', existing.id);
+    } else {
+      await client.from('inventory_vendors').insert(payload);
+    }
+  } else if (existing?.commissary_location_id === location.id) {
+    await client.from('inventory_vendors').update({
+      commissary_location_id: null,
+      is_commissary: false,
+      is_active: false,
+    }).eq('id', existing.id);
+  }
+}
+
 function companyInvitePayload(user, body) {
   if (!user.company_id) throw httpError(400, 'No company associated with your account');
 
@@ -368,6 +436,18 @@ async function handleFunction(name, req, client, user, body) {
         return { error: 'Your current plan has reached its active location limit.' };
       }
 
+      const newLocationType = ['retail', 'roastery', 'hybrid'].includes(body.location_type) ? body.location_type : 'retail';
+      // Default module flags so a new location matches the company's current usage:
+      // task always on; inventory follows the company gate; roastery follows the
+      // company gate or the location type; financial inherits whether any sibling
+      // location already has it (mirrors the migration's provisioning backfill).
+      const enabledFeatures = company.enabled_features || [];
+      const { count: financialLocCount } = await client
+        .from('locations')
+        .select('id', { count: 'exact', head: true })
+        .eq('company_id', user.company_id)
+        .eq('is_financial_enabled', true);
+
       const { data, error } = await client
         .from('locations')
         .insert({
@@ -376,13 +456,85 @@ async function handleFunction(name, req, client, user, body) {
           address: body.address || null,
           cash_drawer_amount: cleanOptionalMoney(body.cash_drawer_amount),
           timezone: cleanOptionalTimezone(body.timezone),
-          location_type: ['retail', 'roastery', 'hybrid'].includes(body.location_type) ? body.location_type : 'retail',
+          location_type: newLocationType,
           is_active: true,
+          is_task_checklist_enabled: true,
+          is_inventory_enabled: enabledFeatures.includes('inventory'),
+          is_roastery_enabled: enabledFeatures.includes('roastery') || ['roastery', 'hybrid'].includes(newLocationType),
+          is_financial_enabled: enabledFeatures.includes('financial') || (financialLocCount || 0) > 0,
         })
         .select('*')
         .single();
       if (error) throw error;
       return { success: true, location: data };
+    }
+
+    case 'updateLocationConfig': {
+      requireManagerOrAdmin(user);
+      if (!user.company_id) throw httpError(400, 'No company associated with your account');
+      const locationId = body.location_id;
+      const patch = body.patch || {};
+      if (!locationId) throw httpError(400, 'location_id is required');
+
+      const { data: current, error: loadError } = await client
+        .from('locations')
+        .select('*')
+        .eq('id', locationId)
+        .eq('company_id', user.company_id)
+        .single();
+      if (loadError || !current) throw httpError(404, 'Location not found');
+
+      // Build a sanitized update from the whitelist only.
+      const update = {};
+      for (const field of LOCATION_PATCH_FIELDS) {
+        if (field in patch) update[field] = patch[field];
+      }
+      if (typeof update.name === 'string' && !update.name.trim()) {
+        throw httpError(400, 'Location name is required');
+      }
+      if ('location_type' in update && !['retail', 'roastery', 'hybrid'].includes(update.location_type)) {
+        delete update.location_type;
+      }
+      if ('cash_drawer_amount' in update) {
+        update.cash_drawer_amount = cleanOptionalMoney(update.cash_drawer_amount);
+      }
+      if ('timezone' in update) {
+        update.timezone = cleanOptionalTimezone(update.timezone);
+      }
+
+      const { data: updated, error: updateError } = await client
+        .from('locations')
+        .update(update)
+        .eq('id', locationId)
+        .eq('company_id', user.company_id)
+        .select('*')
+        .single();
+      if (updateError) throw updateError;
+
+      // Audit any feature-flag change (immutable log).
+      const auditRows = [];
+      for (const flag of LOCATION_FEATURE_FLAGS) {
+        if (flag in update && update[flag] !== current[flag]) {
+          auditRows.push({
+            company_id: user.company_id,
+            location_id: locationId,
+            feature: flag.replace(/^is_/, '').replace(/_enabled$/, ''),
+            old_value: current[flag],
+            new_value: update[flag],
+            changed_by: user.id,
+          });
+        }
+      }
+      if (auditRows.length) {
+        await client.from('location_feature_audit').insert(auditRows);
+      }
+
+      // Keep the commissary vendor in sync when the role changed.
+      if ('is_commissary' in update && update.is_commissary !== current.is_commissary) {
+        await syncCommissaryVendorForLocation(client, user.company_id, updated, update.is_commissary);
+      }
+
+      return { success: true, location: updated };
     }
 
     case 'selfEnroll': {

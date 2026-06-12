@@ -260,7 +260,7 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Link to={`/location-settings?location_id=${data.location.id}`}>
+                    <Link to={`/dashboard/financial/labor-settings?location_id=${data.location.id}`}>
                       <Button size="sm" variant="outline">
                         Settings
                       </Button>

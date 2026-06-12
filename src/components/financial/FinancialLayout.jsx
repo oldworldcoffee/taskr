@@ -6,10 +6,10 @@ import { Button } from "@/components/ui/button";
 import { FinancialProvider } from "@/components/financial/FinancialContext";
 
 export default function FinancialLayout() {
-  const { user, userHasFeature } = useAuth();
-  // Managers/admins by role, or any user explicitly granted the financial
-  // feature (users.feature_permissions.financial). Same idiom as inventory.
-  const canUse = Boolean(user?.company_id) && userHasFeature("financial");
+  const { user, isFeatureEnabledAnywhere } = useAuth();
+  // company AND location AND user. Financial has no company-level gate today
+  // (user grant only), plus the new per-location flag at any accessible location.
+  const canUse = Boolean(user?.company_id) && isFeatureEnabledAnywhere("financial");
 
   if (!canUse) {
     return (

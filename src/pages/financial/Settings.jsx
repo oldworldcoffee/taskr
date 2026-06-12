@@ -1,34 +1,13 @@
-import { useState } from "react";
 import { Link } from "react-router-dom";
-import { base44 } from "@/api/base44Client";
 import { useFinancial } from "@/components/financial/FinancialContext";
 import ConnectSquareButton from "@/components/financial/ConnectSquareButton";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Switch } from "@/components/ui/switch";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, Link2, Loader2, MapPin, Settings2, Sliders } from "lucide-react";
-import { toast } from "sonner";
+import { CheckCircle2, Link2, Loader2, Settings2, Sliders } from "lucide-react";
 
 export default function FinancialSettings() {
-  const { companyId, tenant, locations, loading, refresh } = useFinancial();
-  const [togglingId, setTogglingId] = useState(null);
+  const { companyId, tenant, loading, refresh } = useFinancial();
   const connected = Boolean(tenant?.square_connected);
-
-  const toggleLocation = async (location, isActive) => {
-    setTogglingId(location.id);
-    try {
-      await base44.functions.invoke("financialToggleLocation", {
-        location_id: location.id,
-        is_active: isActive,
-      });
-      await refresh();
-    } catch (err) {
-      toast.error(err.message || "Failed to update location");
-    } finally {
-      setTogglingId(null);
-    }
-  };
 
   if (loading) {
     return (
@@ -45,7 +24,8 @@ export default function FinancialSettings() {
           <Settings2 className="h-6 w-6" /> Financial Settings
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Connect Square for live sales data and choose which locations to forecast.
+          Connect Square for live sales data. Enable Financial per location in
+          Settings → Locations.
         </p>
       </div>
 
@@ -73,50 +53,6 @@ export default function FinancialSettings() {
             )}
           </div>
           <ConnectSquareButton tenantId={companyId} connected={connected} onDisconnect={refresh} />
-        </CardContent>
-      </Card>
-
-      {/* Locations */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <MapPin className="h-5 w-5" /> Locations
-          </CardTitle>
-          <CardDescription>
-            Square locations are matched to your taskr locations on connect. New ones arrive
-            turned off — enable the ones you want to forecast.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {locations.length === 0 && (
-            <p className="text-sm text-muted-foreground">No locations yet.</p>
-          )}
-          {locations.map((loc) => (
-            <div
-              key={loc.id}
-              className="flex items-center justify-between gap-4 rounded-lg border border-border p-3"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium truncate">{loc.name}</span>
-                  {loc.square_location_id && (
-                    <Badge variant="secondary" className="text-[10px]">Square</Badge>
-                  )}
-                </div>
-                {loc.address && (
-                  <p className="text-xs text-muted-foreground truncate">{loc.address}</p>
-                )}
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {togglingId === loc.id && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
-                <Switch
-                  checked={loc.is_active !== false}
-                  disabled={togglingId === loc.id}
-                  onCheckedChange={(checked) => toggleLocation(loc, checked)}
-                />
-              </div>
-            </div>
-          ))}
         </CardContent>
       </Card>
 

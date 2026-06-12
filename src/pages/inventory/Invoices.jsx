@@ -516,7 +516,7 @@ export default function Invoices() {
       base44.entities.PrepaidPool.filter({ status: 'active' }).catch(() => []),
       base44.entities.Order.list('-created_date', 200).catch(() => []),
     ]).then(([locs, itms, linv, invs, vends, cats, poolRows, orderRows]) => {
-      setLocations(locs.filter(l => canAccessLocation(l.id)));
+      setLocations(locs.filter(l => canAccessLocation(l.id) && l.is_inventory_enabled !== false));
       setItems(itms);
       setLocInv(linv);
       setInvoices(invs);

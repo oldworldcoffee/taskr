@@ -40,7 +40,7 @@ export default function Transfers() {
     base44.entities.LocationInventory.list(),
     base44.entities.Transfer.list('-created_date', 50),
   ]).then(([locs, itms, linv, trans]) => {
-    const accessibleLocs = locs.filter(l => canAccessLocation(l.id));
+    const accessibleLocs = locs.filter(l => canAccessLocation(l.id) && l.is_inventory_enabled !== false);
     const accessibleLocIds = new Set(accessibleLocs.map(l => l.id));
     setAllLocations(locs); // all locations for form dropdowns
     setLocations(accessibleLocs); // only accessible for display/names

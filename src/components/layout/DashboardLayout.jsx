@@ -211,12 +211,13 @@ function NavGroup({
 
 function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, unreadForum, markChatSeen, markForumSeen }) {
   const role = user?.role;
-  const { userHasFeature, hasRoasteryLocation } = useAuth();
-  // Match the route guards: managers/admins by role, or any user with an
-  // explicit grant; a roastery/hybrid location auto-enables roastery for staff.
-  const inventoryEnabled = company?.enabled_features?.includes("inventory") && userHasFeature("inventory");
-  const roasteryEnabled = userHasFeature("roastery") || (hasRoasteryLocation && ["admin", "manager", "super_admin"].includes(role));
-  const financialEnabled = userHasFeature("financial");
+  const { isFeatureEnabledAnywhere } = useAuth();
+  // company AND location AND user: a module shows if it's enabled at any location
+  // the user can access (per-location filtering happens inside each module page).
+  const checklistsEnabled = isFeatureEnabledAnywhere("task_checklist", company);
+  const inventoryEnabled = isFeatureEnabledAnywhere("inventory", company);
+  const roasteryEnabled = isFeatureEnabledAnywhere("roastery", company);
+  const financialEnabled = isFeatureEnabledAnywhere("financial", company);
   const visibleTeamHubItems = teamHubItems.filter((item) => canSeeItem(item, role));
   const visiblePrimaryItems = primaryItems.filter((item) => canSeeItem(item, role));
   const isItemActive = (item) => item.exact ? isExact(item.path) : isActive(item.path);
@@ -239,19 +240,21 @@ function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, un
         markForumSeen={markForumSeen}
       />
 
-      <NavGroup
-        label="Checklists"
-        icon={ClipboardList}
-        items={checklistItems}
-        active={checklistsActive}
-        defaultOpen
-        isItemActive={isItemActive}
-        onNavigate={onNavigate}
-        unreadChat={unreadChat}
-        unreadForum={unreadForum}
-        markChatSeen={markChatSeen}
-        markForumSeen={markForumSeen}
-      />
+      {checklistsEnabled && (
+        <NavGroup
+          label="Checklists"
+          icon={ClipboardList}
+          items={checklistItems}
+          active={checklistsActive}
+          defaultOpen
+          isItemActive={isItemActive}
+          onNavigate={onNavigate}
+          unreadChat={unreadChat}
+          unreadForum={unreadForum}
+          markChatSeen={markChatSeen}
+          markForumSeen={markForumSeen}
+        />
+      )}
 
       {inventoryEnabled && (
         <NavGroup

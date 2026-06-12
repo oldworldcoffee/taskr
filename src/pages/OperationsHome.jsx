@@ -54,7 +54,7 @@ function QuickLink({ to, icon: Icon, label }) {
 }
 
 export default function OperationsHome() {
-  const { user } = useAuth();
+  const { user, isFeatureEnabledAnywhere } = useAuth();
   const { unreadChat, unreadForum } = useUnreadCounts();
   const today = format(new Date(), "yyyy-MM-dd");
   const canManage = ["admin", "manager", "super_admin"].includes(user?.role);
@@ -80,7 +80,7 @@ export default function OperationsHome() {
     enabled: !!user?.company_id,
   });
 
-  const inventoryEnabled = (company?.enabled_features || []).includes("inventory") && canManage;
+  const inventoryEnabled = isFeatureEnabledAnywhere("inventory", company);
 
   const { data: pendingOrders = [] } = useQuery({
     queryKey: ["operations-home-inventory-orders", user?.company_id],

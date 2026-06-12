@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input"; // still used in NewDMDialog search
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Globe, Send, Plus, MessageSquare, ChevronDown, ChevronRight, X, ChevronLeft, Bell } from "lucide-react";
-import { getChannelLastSeen, markChannelSeen } from "@/hooks/useUnreadCounts";
+import { getChannelLastSeen, markChannelSeen, markAllChatSeen } from "@/hooks/useUnreadCounts";
 import { formatDistanceToNow } from "date-fns";
 import UserAvatar from "@/components/shared/UserAvatar";
 import MentionTextarea from "@/components/shared/MentionTextarea";
@@ -455,6 +455,12 @@ export default function Chat() {
   const [dmChannels, setDmChannels] = useState([]);
   const [channelsExpanded, setChannelsExpanded] = useState(true);
   const [dmsExpanded, setDmsExpanded] = useState(true);
+
+  // Opening the Chat page clears the module unread badge, regardless of how the
+  // user arrived (nav link, direct URL, or clicking a notification/alert).
+  useEffect(() => {
+    markAllChatSeen();
+  }, []);
 
   // Fetch all recent messages for unread feed
   const { data: allRecentMessages = [] } = useQuery({

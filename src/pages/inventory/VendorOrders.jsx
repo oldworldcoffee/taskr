@@ -114,7 +114,7 @@ export default function VendorOrders() {
         base44.entities.Order.filter({ company_id: companyId }, '-created_date', 50),
       ]);
       const enrichedLocations = enrichLocationsWithInventorySettings(asArray(locs), asArray(settings));
-      const accessibleLocs = enrichedLocations.filter(l => canAccessLocation(l.id));
+      const accessibleLocs = enrichedLocations.filter(l => canAccessLocation(l.id) && l.is_inventory_enabled !== false);
       const accessibleLocIds = new Set(accessibleLocs.map(l => l.id));
       setLocations(accessibleLocs);
       setVendors(asArray(vends));

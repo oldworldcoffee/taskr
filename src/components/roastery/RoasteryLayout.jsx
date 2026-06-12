@@ -6,10 +6,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { RoasteryProvider } from "./RoasteryContext";
 
 export default function RoasteryLayout() {
-  const { user, userHasFeature, hasRoasteryLocation } = useAuth();
-  // Managers/admins by role, or any user granted roastery access. A roastery/
-  // hybrid location auto-enables roastery for managers/admins.
-  const canUse = Boolean(user?.company_id) && (userHasFeature("roastery") || (hasRoasteryLocation && ["admin", "manager", "super_admin"].includes(user?.role)));
+  const { user, isFeatureEnabledAnywhere } = useAuth();
+  // company AND location AND user. Roastery is enabled by a roastery/hybrid
+  // location (or enabled_features) plus the per-location flag, for granted users
+  // or admins/managers — at any accessible location.
+  const canUse = Boolean(user?.company_id) && isFeatureEnabledAnywhere("roastery");
 
   if (!canUse) {
     return (
