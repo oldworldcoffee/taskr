@@ -176,14 +176,14 @@ export default function ChecklistDetail() {
       completion_notes: optionalRemaining > 0 ? `Submitted with ${optionalRemaining} optional tasks remaining` : "",
     });
     setSubmitting(false);
-    navigate("/");
+    navigate("/checklists");
   };
 
   return (
     <div className="space-y-5 pb-24">
       {/* Header */}
       <div>
-        <button onClick={() => navigate("/")} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-3">
+        <button onClick={() => navigate("/checklists")} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-3">
           <ArrowLeft className="h-4 w-4" /> Back
         </button>
         <h2 className="text-xl font-bold">{checklist.name}</h2>

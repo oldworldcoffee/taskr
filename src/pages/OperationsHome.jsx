@@ -17,6 +17,7 @@ import { useAuth } from "@/lib/AuthContext";
 import { useUnreadCounts } from "@/hooks/useUnreadCounts";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import MyTodos from "@/components/todos/MyTodos";
 
 function MetricCard({ title, value, description, icon: Icon, to, muted = false }) {
   const card = (
@@ -154,6 +155,16 @@ export default function OperationsHome() {
         />
       </div>
 
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">My Tasks</CardTitle>
+          <CardDescription>Your to-dos due now and coming up.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <MyTodos title="My Tasks" compact />
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 lg:grid-cols-[1.35fr_0.65fr]">
         <Card>
           <CardHeader>
@@ -186,6 +197,7 @@ export default function OperationsHome() {
             <CardDescription>Common manager workflows.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-2">
+            <QuickLink to="/dashboard/todos" icon={ClipboardList} label="To-Dos" />
             <QuickLink to="/dashboard/checklists/overview" icon={ClipboardList} label="Checklist Overview" />
             <QuickLink to="/dashboard/issues" icon={AlertTriangle} label="Issues & Flags" />
             {inventoryEnabled && <QuickLink to="/dashboard/inventory" icon={PackageCheck} label="Inventory" />}

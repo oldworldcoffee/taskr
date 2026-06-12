@@ -1,119 +1,43 @@
-import { supabase } from '@/api/supabaseClient';
+import { supabase } from './supabase';
+import { API_BASE } from './config';
+
+// Ported from the web app's src/api/base44Client.js, trimmed to the entities the
+// employee daily slice uses and adapted for React Native (no window/relative
+// fetch, no crypto.randomUUID for channel names).
 
 const ENTITY_TABLES = {
-  BrandSettings: 'brand_settings',
-  CashDepositReceipt: 'cash_deposit_receipts',
-  ChatChannel: 'chat_channels',
-  ChatMessage: 'chat_messages',
   Checklist: 'checklists',
   ChecklistInstance: 'checklist_instances',
-  Company: 'companies',
-  Equipment: 'equipment',
-  ForumBoard: 'forum_boards',
-  ForumComment: 'forum_comments',
-  ForumPost: 'forum_posts',
-  CommissaryFulfillment: 'inventory_commissary_fulfillments',
-  InventoryCategory: 'inventory_categories',
-  InventoryCount: 'inventory_counts',
-  InventoryItem: 'inventory_items',
-  InventoryLocationSetting: 'inventory_location_settings',
-  InventoryMovement: 'inventory_movements',
-  InventorySnapshot: 'inventory_snapshots',
-  InventorySnapshotAudit: 'inventory_snapshot_audits',
-  Invoice: 'inventory_invoices',
-  ItemStorageArea: 'inventory_item_storage_areas',
-  ItemVariant: 'inventory_item_variants',
-  KBArticle: 'kb_articles',
-  KBFolder: 'kb_folders',
   Location: 'locations',
-  LocationInventory: 'inventory_location_stock',
-  RecipeChoiceGroup: 'inventory_recipe_choice_groups',
-  RecipeModifier: 'inventory_recipe_modifiers',
-  RecipeSizeSet: 'inventory_recipe_size_sets',
-  MenuRecipe: 'inventory_menu_recipes',
   Notification: 'notifications',
-  Order: 'inventory_orders',
-  OrderLine: 'inventory_order_lines',
-  PendingInvite: 'pending_invites',
-  ReceivingEvent: 'inventory_receiving_events',
-  ReceivingLine: 'inventory_receiving_lines',
-  PoolDrawdown: 'inventory_pool_drawdowns',
-  PrepaidPool: 'inventory_prepaid_pools',
-  PrepRecipe: 'inventory_prep_recipes',
-  ProductGroup: 'inventory_product_groups',
-  RecipeMarginSetting: 'inventory_recipe_margin_settings',
-  RecipePackage: 'inventory_packages',
-  ServiceRecord: 'service_records',
-  ServiceSchedule: 'service_schedules',
-  StorageArea: 'inventory_storage_areas',
-  Subscription: 'subscriptions',
   Task: 'tasks',
   TaskCompletion: 'task_completions',
   TaskGroup: 'task_groups',
   Todo: 'todos',
   TodoGroup: 'todo_groups',
   TodoOccurrence: 'todo_occurrences',
-  Transfer: 'inventory_transfers',
   User: 'users',
-  Vendor: 'inventory_vendors',
 };
 
 const COMPANY_SCOPED_ENTITIES = new Set([
-  'CommissaryFulfillment',
   'Notification',
   'Todo',
   'TodoGroup',
   'TodoOccurrence',
-  'InventoryCategory',
-  'InventoryCount',
-  'InventoryItem',
-  'InventoryLocationSetting',
-  'InventoryMovement',
-  'InventorySnapshot',
-  'InventorySnapshotAudit',
-  'Invoice',
-  'ItemStorageArea',
-  'ItemVariant',
-  'LocationInventory',
-  'RecipeChoiceGroup',
-  'RecipeModifier',
-  'RecipeSizeSet',
-  'MenuRecipe',
-  'Order',
-  'OrderLine',
-  'ReceivingEvent',
-  'ReceivingLine',
-  'PoolDrawdown',
-  'PrepaidPool',
-  'PrepRecipe',
-  'ProductGroup',
-  'RecipeMarginSetting',
-  'RecipePackage',
-  'StorageArea',
-  'Transfer',
-  'Vendor',
 ]);
 
 const ARRAY_COLUMNS = new Set([
   'active_users',
   'assigned_locations',
-  'authorized_emails',
   'assignee_emails',
   'assignee_roles',
   'delivered_channels',
-  'dm_participants',
-  'file_urls',
   'group_ids',
-  'kb_article_ids',
-  'media_urls',
   'member_emails',
   'notify_emails',
   'recurrence_days',
   'scheduled_days',
 ]);
-
-const UPLOAD_BUCKET =
-  import.meta.env.VITE_SUPABASE_STORAGE_BUCKET || 'taskr-uploads';
 
 function raise(error) {
   if (!error) return;
@@ -170,11 +94,7 @@ function applySortAndLimit(query, sort, limit) {
     const column = descending ? sort.slice(1) : sort;
     query = query.order(column, { ascending: !descending });
   }
-
-  if (limit) {
-    query = query.limit(limit);
-  }
-
+  if (limit) query = query.limit(limit);
   return query;
 }
 
@@ -190,19 +110,28 @@ function selectColumns(fields) {
   return '*';
 }
 
+let channelSeq = 0;
+
 function entityClient(entityName) {
   const table = ENTITY_TABLES[entityName];
 
   return {
     async list(sort = '-created_date', limit, fields) {
-      const query = applySortAndLimit(supabase.from(table).select(selectColumns(fields)), sort, limit);
+      const query = applySortAndLimit(
+        supabase.from(table).select(selectColumns(fields)),
+        sort,
+        limit
+      );
       const { data, error } = await query;
       raise(error);
       return data || [];
     },
 
     async filter(filters = {}, sort = '-created_date', limit, fields) {
-      let query = applyFilters(supabase.from(table).select(selectColumns(fields)), filters);
+      let query = applyFilters(
+        supabase.from(table).select(selectColumns(fields)),
+        filters
+      );
       if (!query) return [];
       query = applySortAndLimit(query, sort, limit);
       const { data, error } = await query;
@@ -233,7 +162,9 @@ function entityClient(entityName) {
 
     async bulkCreate(records) {
       if (!records?.length) return [];
-      const payload = await Promise.all(records.map((record) => withDefaultCompany(entityName, record)));
+      const payload = await Promise.all(
+        records.map((record) => withDefaultCompany(entityName, record))
+      );
       const { data, error } = await supabase
         .from(table)
         .insert(payload)
@@ -260,26 +191,22 @@ function entityClient(entityName) {
     },
 
     subscribe(callback) {
+      // crypto.randomUUID() isn't available in RN without a polyfill; a local
+      // counter is enough to keep channel names unique within the app session.
+      channelSeq += 1;
       const channel = supabase
-        .channel(`${table}-changes-${crypto.randomUUID()}`)
+        .channel(`${table}-changes-${channelSeq}`)
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table },
           (payload) => callback(payload)
         )
         .subscribe();
-
       return () => {
         supabase.removeChannel(channel);
       };
     },
   };
-}
-
-async function currentSession() {
-  const { data, error } = await supabase.auth.getSession();
-  raise(error);
-  return data.session;
 }
 
 let cachedProfile = null;
@@ -361,7 +288,17 @@ async function withDefaultCompany(entityName, record = {}) {
 }
 
 async function invokeFunction(name, payload = {}) {
-  const session = await currentSession();
+  // v1 is dev-only and the employee slice only touches one best-effort function
+  // (notifyTodoCompletion). Without an API_BASE configured we no-op loudly so
+  // callers' try/catch logging stays meaningful instead of crashing.
+  if (!API_BASE) {
+    console.warn(`Serverless function "${name}" skipped: no API_BASE configured.`);
+    return { data: {} };
+  }
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
   const body =
     payload &&
     Object.prototype.hasOwnProperty.call(payload, 'data') &&
@@ -369,7 +306,7 @@ async function invokeFunction(name, payload = {}) {
       ? payload.data
       : payload;
 
-  const response = await fetch(`/api/functions/${name}`, {
+  const response = await fetch(`${API_BASE}/api/functions/${name}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -379,21 +316,8 @@ async function invokeFunction(name, payload = {}) {
     },
     body: JSON.stringify(body || {}),
   });
-
-  const contentType = response.headers.get('content-type') || '';
-  if (!contentType.includes('application/json')) {
-    const responseText = await response.text().catch(() => '');
-    const responsePreview = responseText.replace(/\s+/g, ' ').trim().slice(0, 300);
-    const message = `Function ${name} returned ${contentType || 'no content type'} instead of JSON (HTTP ${response.status})`;
-    console.error(`${message}. Response started with: ${responsePreview || '(empty response)'}`);
-    throw new Error(message);
-  }
-
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || `Function ${name} failed`);
-  }
-
+  if (!response.ok) throw new Error(data.error || `Function ${name} failed`);
   return { data };
 }
 
@@ -421,42 +345,10 @@ export const base44 = {
     },
 
     async isAuthenticated() {
-      return Boolean(await currentSession());
-    },
-
-    async register({ email, password, fullName, name }) {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: { full_name: fullName || name || '' },
-          emailRedirectTo: `${window.location.origin}/`,
-        },
-      });
-      raise(error);
-      return data;
-    },
-
-    async verifyOtp({ email, otpCode, token }) {
-      const { data, error } = await supabase.auth.verifyOtp({
-        email,
-        token: otpCode || token,
-        type: 'signup',
-      });
-      raise(error);
-      return {
-        ...data,
-        access_token: data.session?.access_token,
-      };
-    },
-
-    async resendOtp(email) {
-      const { data, error } = await supabase.auth.resend({
-        type: 'signup',
-        email,
-      });
-      raise(error);
-      return data;
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      return Boolean(session);
     },
 
     async loginViaEmailPassword(email, password) {
@@ -469,64 +361,13 @@ export const base44 = {
       return data;
     },
 
-    async loginWithProvider(provider, redirectPath = '/') {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: {
-          redirectTo: `${window.location.origin}${redirectPath}`,
-        },
-      });
-      raise(error);
-      return data;
-    },
-
-    setToken() {
-      return null;
-    },
-
-    async logout(redirectTo = '/login') {
+    async logout() {
       await supabase.auth.signOut();
-      window.location.href = redirectTo === true ? '/login' : '/login';
-    },
-
-    redirectToLogin() {
-      window.location.href = '/login';
-    },
-
-    async updateMe(updates) {
-      const { data } = await invokeFunction('updateMe', updates);
       cachedProfile = null;
-      return data.user;
-    },
-
-    async updatePassword({ currentPassword, newPassword }) {
-      const user = await this.me();
-      if (currentPassword) {
-        const { error: verifyError } = await supabase.auth.signInWithPassword({
-          email: user.email,
-          password: currentPassword,
-        });
-        raise(verifyError);
-      }
-      const { data, error } = await supabase.auth.updateUser({
-        password: newPassword,
-      });
-      raise(error);
-      return data;
     },
 
     async resetPasswordRequest(email) {
-      const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-      raise(error);
-      return data;
-    },
-
-    async resetPassword({ newPassword }) {
-      const { data, error } = await supabase.auth.updateUser({
-        password: newPassword,
-      });
+      const { data, error } = await supabase.auth.resetPasswordForEmail(email);
       raise(error);
       return data;
     },
@@ -534,38 +375,5 @@ export const base44 = {
 
   functions: {
     invoke: invokeFunction,
-  },
-
-  users: {
-    inviteUser(invite, role = 'employee') {
-      const payload = typeof invite === 'string' ? { email: invite, role } : invite;
-      return invokeFunction('inviteUser', payload);
-    },
-  },
-
-  integrations: {
-    Core: {
-      async UploadFile({ file }) {
-        const session = await currentSession();
-        if (!session) throw new Error('Please log in before uploading files.');
-
-        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-');
-        const path = `${session.user.id}/${Date.now()}-${crypto.randomUUID()}-${safeName}`;
-        const { error } = await supabase.storage
-          .from(UPLOAD_BUCKET)
-          .upload(path, file, {
-            contentType: file.type || 'application/octet-stream',
-          });
-        raise(error);
-
-        const { data } = supabase.storage.from(UPLOAD_BUCKET).getPublicUrl(path);
-        return { file_url: data.publicUrl };
-      },
-
-      async InvokeLLM(payload = {}) {
-        const { data } = await invokeFunction('extractInvoiceImage', payload);
-        return data;
-      },
-    },
   },
 };

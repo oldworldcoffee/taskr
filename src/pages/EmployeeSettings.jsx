@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 import { useAuth } from "@/lib/AuthContext";
 import { base44 } from "@/api/base44Client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Shield, Camera, Loader2, Check, Eye, EyeOff } from "lucide-react";
 import UserAvatar from "@/components/shared/UserAvatar";
+import PushToggle from "@/components/shared/PushToggle";
 import { toast } from "sonner";
 
 export default function EmployeeSettings() {
@@ -227,6 +228,15 @@ export default function EmployeeSettings() {
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Notifications</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <PushToggle />
+        </CardContent>
+      </Card>
     </div>
   );
 }

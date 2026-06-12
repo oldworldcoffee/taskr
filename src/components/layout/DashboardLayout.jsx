@@ -14,6 +14,7 @@ import {
   Globe,
   Layers,
   LayoutDashboard,
+  ListChecks,
   Lock,
   LogOut,
   MapPin,
@@ -41,6 +42,7 @@ import { useBrandSettings } from "@/hooks/useBrandSettings";
 import { useQuery } from "@tanstack/react-query";
 import GlobalSearch from "@/components/shared/GlobalSearch";
 import TrialBanner from "@/components/shared/TrialBanner";
+import NotificationsBell from "@/components/shared/NotificationsBell";
 import { useUnreadCounts } from "@/hooks/useUnreadCounts";
 
 const dashboardItem = { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, exact: true };
@@ -83,6 +85,7 @@ const roasteryItems = [
 ];
 
 const teamHubItems = [
+  { path: "/dashboard/todos", label: "To-Dos", icon: ListChecks, roles: ["admin", "manager"] },
   { path: "/dashboard/knowledge-base", label: "Knowledge Base", icon: BookOpen, roles: ["admin", "manager", "supervisor"] },
   { path: "/dashboard/forum", label: "Message Board", icon: MessageSquare, roles: ["admin", "manager"], badge: "forum" },
   { path: "/dashboard/chat", label: "Chat", icon: MessageCircle, roles: ["admin", "manager"], badge: "chat" },
@@ -424,6 +427,7 @@ export default function DashboardLayout() {
               <p className="text-sm font-medium text-sidebar-foreground truncate">{user?.full_name || user?.email}</p>
               <p className="text-xs text-sidebar-foreground/50 truncate">{user?.role}</p>
             </div>
+            <NotificationsBell />
             <button onClick={() => base44.auth.logout()} className="text-sidebar-foreground/50 hover:text-sidebar-foreground">
               <LogOut className="h-4 w-4" />
             </button>
@@ -442,6 +446,7 @@ export default function DashboardLayout() {
             <span className="font-bold text-sm">{brand?.business_name || company?.name || "OWCR Dashboard"}</span>
           </div>
           <div className="flex items-center gap-2">
+            <NotificationsBell />
             <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
               <SheetTrigger asChild>
                 <button className="text-muted-foreground p-1">

@@ -9,61 +9,15 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, Trash2, BookOpen, MessageSquare, MessageCircle, Users, Lock, X } from "lucide-react";
+import { Plus, Trash2, BookOpen, MessageSquare, MessageCircle, Lock } from "lucide-react";
 import { toast } from "sonner";
+import MemberPicker from "@/components/shared/MemberPicker";
 
 const TYPES = [
   { key: "kb", label: "Knowledge Base Folder", icon: BookOpen, color: "text-amber-600" },
   { key: "forum", label: "Message Board", icon: MessageSquare, color: "text-blue-600" },
   { key: "chat", label: "Chat Channel", icon: MessageCircle, color: "text-green-600" },
 ];
-
-function MemberPicker({ allUsers, selected, onChange, currentUserEmail }) {
-  const [search, setSearch] = useState("");
-  const filtered = allUsers.filter(u =>
-    u.email !== currentUserEmail &&
-    (u.full_name || u.email || "").toLowerCase().includes(search.toLowerCase())
-  );
-
-  const toggle = (email) => {
-    onChange(prev => prev.includes(email) ? prev.filter(e => e !== email) : [...prev, email]);
-  };
-
-  return (
-    <div className="space-y-2">
-      <Input placeholder="Search employees..." value={search} onChange={e => setSearch(e.target.value)} />
-      {selected.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {selected.map(email => {
-            const u = allUsers.find(x => x.email === email);
-            return (
-              <span key={email} className="flex items-center gap-1 px-2 py-0.5 bg-primary/10 text-primary rounded-full text-xs font-medium">
-                {u?.full_name || email}
-                <button onClick={() => toggle(email)}><X className="h-3 w-3" /></button>
-              </span>
-            );
-          })}
-        </div>
-      )}
-      <div className="max-h-48 overflow-y-auto border rounded-lg p-1 space-y-0.5">
-        {filtered.length === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-3">No employees found</p>
-        ) : (
-          filtered.map(u => (
-            <label key={u.email} className="flex items-center gap-2 px-3 py-2 rounded-md hover:bg-muted cursor-pointer">
-              <Checkbox checked={selected.includes(u.email)} onCheckedChange={() => toggle(u.email)} />
-              <div>
-                <p className="text-sm font-medium">{u.full_name || u.email}</p>
-                <p className="text-xs text-muted-foreground">{u.email}</p>
-              </div>
-            </label>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
 
 function GroupCard({ item, type, onDelete, allUsers }) {
   const typeInfo = TYPES.find(t => t.key === type);
