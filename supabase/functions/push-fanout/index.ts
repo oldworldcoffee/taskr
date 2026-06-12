@@ -142,6 +142,28 @@ async function tokensForEmails(emails: string[]) {
     .filter((t) => typeof t === 'string' && /^Expo(nent)?PushToken\[/.test(t));
 }
 
+// Emails actively viewing `channelKey` on the web app right now (heartbeat within
+// the freshness window). Mobile push is skipped for them — they see it live.
+const PRESENCE_FRESH_MS = 40000;
+async function activelyViewing(emails: string[], channelKey: string) {
+  if (emails.length === 0 || !channelKey) return new Set<string>();
+  const cutoff = new Date(Date.now() - PRESENCE_FRESH_MS).toISOString();
+  const { data, error } = await supabase
+    .from('chat_presence')
+    .select('user_email, active_channel, updated_at')
+    .in('user_email', emails)
+    .gte('updated_at', cutoff);
+  if (error) {
+    console.error('chat_presence lookup skipped', error.message || error);
+    return new Set<string>();
+  }
+  return new Set(
+    (data || [])
+      .filter((p) => p.active_channel === channelKey)
+      .map((p) => (p.user_email || '').toLowerCase())
+  );
+}
+
 async function sendExpo(messages: any[]) {
   if (messages.length === 0) return;
   // Expo accepts up to 100 messages per request.
@@ -276,9 +298,21 @@ Deno.serve(async (req) => {
       return new Response('no recipients', { status: 200 });
     }
 
+    // Mute MOBILE push for recipients actively viewing this exact conversation
+    // on the web app (they see it live). Web push is unaffected.
+    let mobileRecipients = resolved.recipients;
+    if (resolved.data?.type === 'chat') {
+      const channelKey =
+        resolved.data.dmChannelId || resolved.data.locationId || 'global';
+      const viewing = await activelyViewing(resolved.recipients, channelKey);
+      if (viewing.size > 0) {
+        mobileRecipients = resolved.recipients.filter((e) => !viewing.has(e));
+      }
+    }
+
     // Deliver to both transports. A recipient may have a mobile token, a browser
     // subscription, or both — so don't bail early when one is empty.
-    const tokens = await tokensForEmails(resolved.recipients);
+    const tokens = await tokensForEmails(mobileRecipients);
     const messages = tokens.map((to) => ({
       to,
       sound: 'default',

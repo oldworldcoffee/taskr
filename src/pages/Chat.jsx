@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"; // still used in NewDMDialog sear
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Globe, Send, Plus, MessageSquare, ChevronDown, ChevronRight, X, ChevronLeft, Bell } from "lucide-react";
 import { getChannelLastSeen, markChannelSeen } from "@/hooks/useUnreadCounts";
+import { heartbeatPresence, clearPresence } from "@/lib/presence";
 import { formatDistanceToNow } from "date-fns";
 import UserAvatar from "@/components/shared/UserAvatar";
 import MentionTextarea from "@/components/shared/MentionTextarea";
@@ -90,6 +91,34 @@ function ChatRoom({ channelId, channelName, userId, userName, userEmail, company
       markChannelSeen(channelId, newestVisibleMessageAt);
     }
   }, [channelId, messages, userEmail]);
+
+  // Presence: while this conversation is open AND the tab is visible+focused,
+  // heartbeat it so push-fanout mutes mobile push for this channel. Blur, hide,
+  // switch channel, or leave the page clears it → mobile push resumes.
+  useEffect(() => {
+    if (!channelId || !userEmail) return;
+    const isViewing = () =>
+      typeof document !== "undefined" &&
+      document.visibilityState === "visible" &&
+      document.hasFocus();
+    const beat = () => {
+      if (isViewing()) heartbeatPresence(userEmail, channelId);
+    };
+    const stop = () => clearPresence(userEmail);
+    const onVisibility = () => (isViewing() ? beat() : stop());
+    beat(); // claim presence immediately on open
+    const interval = setInterval(beat, 25000); // refresh inside the ~40s stale window
+    window.addEventListener("focus", beat);
+    window.addEventListener("blur", stop);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", beat);
+      window.removeEventListener("blur", stop);
+      document.removeEventListener("visibilitychange", onVisibility);
+      stop();
+    };
+  }, [channelId, userEmail]);
 
   const sendMessage = async () => {
     if (!text.trim()) return;
