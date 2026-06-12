@@ -11,7 +11,6 @@ const FINANCIAL_FUNCTIONS = new Set([
   'financialSquareOAuth',
   'financialSquareSalesData',
   'financialDailySalesActual',
-  'financialToggleLocation',
 ]);
 
 const FINANCIAL_ALIASES = {
@@ -20,7 +19,6 @@ const FINANCIAL_ALIASES = {
   squareOAuth: 'financialSquareOAuth',
   squareSalesData: 'financialSquareSalesData',
   getDailySalesActual: 'financialDailySalesActual',
-  toggleLocation: 'financialToggleLocation',
 };
 
 const SQUARE_VERSION = '2024-01-18';
@@ -101,10 +99,26 @@ async function financialGetContext(client, user) {
   if (locationsRes.error) throw locationsRes.error;
   if (laborRes.error) throw laborRes.error;
 
+  const locations = locationsRes.data || [];
+
+  // Labor settings are absorbed onto the location row (financial_settings_json).
+  // Prefer the absorbed blob; fall back to the legacy financial_labor_settings
+  // table for any location not yet migrated (transition safety).
+  const laborByLocation = new Map();
+  for (const row of laborRes.data || []) {
+    if (row.location_id) laborByLocation.set(row.location_id, row);
+  }
+  for (const loc of locations) {
+    const blob = loc.financial_settings_json;
+    if (blob && typeof blob === 'object' && Object.keys(blob).length > 0) {
+      laborByLocation.set(loc.id, { company_id: companyId, location_id: loc.id, ...blob });
+    }
+  }
+
   return {
     settings: stripTokens(settings) || { company_id: companyId, square_connected: false },
-    locations: locationsRes.data || [],
-    laborSettings: laborRes.data || [],
+    locations,
+    laborSettings: Array.from(laborByLocation.values()),
   };
 }
 
@@ -511,25 +525,6 @@ async function financialDailySalesActual(client, user, body) {
   };
 }
 
-async function financialToggleLocation(client, user, body) {
-  const companyId = requireCompany(user);
-  requireManagerOrAdmin(user);
-  const { location_id, is_active } = body;
-  if (location_id === undefined || is_active === undefined) {
-    throw httpError(400, 'location_id and is_active are required');
-  }
-  const { data, error } = await client
-    .from('locations')
-    .update({ is_active })
-    .eq('id', location_id)
-    .eq('company_id', companyId)
-    .select('*')
-    .maybeSingle();
-  if (error) throw error;
-  if (!data) throw httpError(404, 'Location not found');
-  return { success: true, location_id, is_active };
-}
-
 export async function handleFinancialFunction(name, req, client, user, body) {
   switch (normalizeFinancialFunction(name)) {
     case 'financialGetContext':
@@ -540,8 +535,6 @@ export async function handleFinancialFunction(name, req, client, user, body) {
       return financialSquareSalesData(client, user, body);
     case 'financialDailySalesActual':
       return financialDailySalesActual(client, user, body);
-    case 'financialToggleLocation':
-      return financialToggleLocation(client, user, body);
     default:
       throw httpError(404, `Unknown financial function: ${name}`);
   }

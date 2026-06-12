@@ -61,7 +61,7 @@ export default function Commissary() {
       base44.entities.CommissaryFulfillment.filter({ company_id: companyId }, '-fulfillment_date', 50),
     ]).then(([locs, settings, vnds, itms, variants, linv, ords, fuls]) => {
       const enrichedLocations = enrichLocationsWithInventorySettings(locs, settings);
-      setLocations(enrichedLocations.filter(l => canAccessLocation(l.id)));
+      setLocations(enrichedLocations.filter(l => canAccessLocation(l.id) && l.is_inventory_enabled !== false));
       setVendors(vnds);
       setItems(itms);
       setVariants(variants);

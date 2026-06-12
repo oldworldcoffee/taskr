@@ -33,7 +33,7 @@ export default function ScheduleBuilder() {
   const { canAccessLocation } = useAuth();
 
   // Restrict to the taskr locations this user can access (admins/managers see all).
-  const accessibleActiveLocations = activeLocations.filter((l) => canAccessLocation(l.id));
+  const accessibleActiveLocations = activeLocations.filter((l) => canAccessLocation(l.id) && l.is_financial_enabled !== false);
 
   // If the currently selected location is not accessible to this user, switch to their first accessible one
   useEffect(() => {

@@ -397,7 +397,7 @@ export default function Vendors() {
             <div className="py-2">
               {(() => {
                 const visibleLocations = isManagerOrStaff
-                  ? locations.filter(l => canAccessLocation(l.id))
+                  ? locations.filter(l => canAccessLocation(l.id) && l.is_inventory_enabled !== false)
                   : locations;
                 return visibleLocations.length === 0 ? (
                   <p className="text-sm text-muted-foreground text-center py-6">No locations assigned. Contact your admin.</p>

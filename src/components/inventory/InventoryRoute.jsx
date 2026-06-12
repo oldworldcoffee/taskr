@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
 export default function InventoryRoute() {
-  const { user, userHasFeature } = useAuth();
+  const { user, userHasFeature, isFeatureEnabledAnywhere } = useAuth();
   // Managers/admins by role, or any user explicitly granted the inventory feature.
   const canUseRole = userHasFeature("inventory");
 
@@ -28,9 +28,8 @@ export default function InventoryRoute() {
     );
   }
 
-  const hasInventory = company?.enabled_features?.includes("inventory");
-
-  if (!canUseRole || !hasInventory) {
+  // company AND location AND user (enabled at any accessible location).
+  if (!isFeatureEnabledAnywhere("inventory", company)) {
     return (
       <Card className="max-w-xl mx-auto">
         <CardContent className="py-10 text-center space-y-4">

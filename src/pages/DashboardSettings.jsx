@@ -14,9 +14,11 @@ import TimezoneSelect, { TIMEZONE_UNSET, getBrowserTimezone } from "@/components
 import PushToggle from "@/components/shared/PushToggle";
 import { Bell } from "lucide-react";
 import { toast } from "sonner";
+import LocationControlPanel from "@/components/locations/LocationControlPanel";
+import { normalizeMoney, normalizeOptionalMoney, formatMoneyInput, preventNegativeAmountKey, hasLocationDrawerOverride } from "@/lib/locationFormat";
 
 export default function DashboardSettings() {
-  const { user } = useAuth();
+  const { user, refreshLocations } = useAuth();
   const queryClient = useQueryClient();
 
   // Brand settings
@@ -105,34 +107,16 @@ export default function DashboardSettings() {
   const [locDrawerAmount, setLocDrawerAmount] = useState("");
   const [locTimezone, setLocTimezone] = useState(getBrowserTimezone());
   const [locType, setLocType] = useState("retail");
-  const [editLocDialog, setEditLocDialog] = useState(false);
-  const [editingLoc, setEditingLoc] = useState(null);
-  const [editLocName, setEditLocName] = useState("");
-  const [editLocAddress, setEditLocAddress] = useState("");
-  const [editLocDrawerAmount, setEditLocDrawerAmount] = useState("");
-  const [editLocTimezone, setEditLocTimezone] = useState(TIMEZONE_UNSET);
-  const [editLocType, setEditLocType] = useState("retail");
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelLocation, setPanelLocation] = useState(null);
   const [deleteLocDialog, setDeleteLocDialog] = useState(false);
   const [deletingLoc, setDeletingLoc] = useState(null);
   const [companyDrawerAmount, setCompanyDrawerAmount] = useState("200.00");
   const [companyDrawerSaving, setCompanyDrawerSaving] = useState(false);
 
-  const formatMoneyInput = (value) => {
-    const amount = Number(value);
-    return Number.isFinite(amount) ? amount.toFixed(2) : "";
-  };
-
-  const normalizeMoney = (value) => Math.max(0, Number.parseFloat(value) || 0);
-  const normalizeOptionalMoney = (value) => (String(value).trim() === "" ? null : normalizeMoney(value));
-  const hasLocationDrawerOverride = (loc) => loc.cash_drawer_amount !== null && loc.cash_drawer_amount !== undefined;
   const drawerForLocation = (loc) => hasLocationDrawerOverride(loc)
     ? Number(loc.cash_drawer_amount)
     : normalizeMoney(company?.cash_drawer_amount ?? 200);
-  const preventNegativeAmountKey = (event) => {
-    if (["-", "+", "e", "E"].includes(event.key)) {
-      event.preventDefault();
-    }
-  };
 
   useEffect(() => {
     if (company) {
@@ -190,32 +174,16 @@ export default function DashboardSettings() {
     queryClient.invalidateQueries({ queryKey: ["locations"] });
   };
 
-  const openEditLoc = (loc) => {
-    setEditingLoc(loc);
-    setEditLocName(loc.name);
-    setEditLocAddress(loc.address || "");
-    setEditLocDrawerAmount(hasLocationDrawerOverride(loc) ? formatMoneyInput(loc.cash_drawer_amount) : "");
-    setEditLocTimezone(loc.timezone || TIMEZONE_UNSET);
-    setEditLocType(loc.location_type || "retail");
-    setEditLocDialog(true);
+  const openLocationPanel = (loc) => {
+    setPanelLocation(loc);
+    setPanelOpen(true);
   };
 
-  const handleEditLoc = async () => {
-    if (!editLocName.trim() || !editingLoc) return;
-    try {
-      await base44.entities.Location.update(editingLoc.id, {
-        name: editLocName.trim(),
-        address: editLocAddress.trim(),
-        cash_drawer_amount: editLocType === "roastery" ? null : normalizeOptionalMoney(editLocDrawerAmount),
-        timezone: editLocTimezone === TIMEZONE_UNSET ? null : editLocTimezone,
-        location_type: editLocType,
-      });
-      queryClient.invalidateQueries({ queryKey: ["locations"] });
-      setEditLocDialog(false);
-      toast.success("Location updated");
-    } catch (err) {
-      toast.error(err.message || "Failed to update location");
-    }
+  // After the panel saves: refresh the locations list and AuthContext nav gating.
+  const handlePanelSaved = async () => {
+    queryClient.invalidateQueries({ queryKey: ["locations"] });
+    queryClient.invalidateQueries({ queryKey: ["company-info"] });
+    await refreshLocations();
   };
 
   const saveCompanyDrawerAmount = async () => {
@@ -365,7 +333,7 @@ export default function DashboardSettings() {
               </div>
               <div className="flex items-center gap-2">
                 <Switch checked={loc.is_active} onCheckedChange={() => toggleLocation(loc)} />
-                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => openEditLoc(loc)} title="Edit">
+                <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => openLocationPanel(loc)} title="Settings">
                   <Pencil className="h-3.5 w-3.5" />
                 </Button>
                 <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-destructive hover:text-destructive" onClick={() => openDeleteLoc(loc)} title="Delete">
@@ -419,49 +387,15 @@ export default function DashboardSettings() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit Location Dialog */}
-      <Dialog open={editLocDialog} onOpenChange={setEditLocDialog}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader><DialogTitle>Edit Location</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div><Label>Name</Label><Input value={editLocName} onChange={(e) => setEditLocName(e.target.value)} /></div>
-            <div><Label>Address</Label><Input value={editLocAddress} onChange={(e) => setEditLocAddress(e.target.value)} placeholder="Full address" /></div>
-            <div>
-              <Label>Location Type</Label>
-              <select className="mt-1 w-full border border-input rounded-md px-3 py-2 text-sm bg-background" value={editLocType} onChange={(e) => setEditLocType(e.target.value)}>
-                <option value="retail">Retail</option>
-                <option value="roastery">Roastery</option>
-                <option value="hybrid">Hybrid (retail + roastery)</option>
-              </select>
-              <p className="text-xs text-muted-foreground mt-1">Roastery or Hybrid locations enable roastery production features.</p>
-            </div>
-            {editLocType !== "roastery" && (
-              <div>
-                <Label>Cash Drawer Amount ($)</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  inputMode="decimal"
-                  value={editLocDrawerAmount}
-                  onChange={(e) => setEditLocDrawerAmount(e.target.value)}
-                  onKeyDown={preventNegativeAmountKey}
-                  placeholder={companyDrawerAmount || "200.00"}
-                />
-              </div>
-            )}
-            <div>
-              <Label>Timezone</Label>
-              <TimezoneSelect value={editLocTimezone} onChange={setEditLocTimezone} />
-              <p className="text-xs text-muted-foreground mt-1">Used for end-of-day inventory snapshots.</p>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditLocDialog(false)}>Cancel</Button>
-            <Button onClick={handleEditLoc} disabled={!editLocName.trim()}>Save</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Master Location Control Panel */}
+      <LocationControlPanel
+        location={panelLocation}
+        open={panelOpen}
+        onOpenChange={setPanelOpen}
+        company={company}
+        onSaved={handlePanelSaved}
+        onRequestDelete={openDeleteLoc}
+      />
 
       {/* Billing */}
       {company && (

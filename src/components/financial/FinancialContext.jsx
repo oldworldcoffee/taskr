@@ -60,18 +60,17 @@ export function FinancialProvider({ children }) {
     refresh();
   }, [refresh]);
 
-  // Default the selected location to the first active one once locations load.
-  useEffect(() => {
-    if (locations.length > 0) {
-      const valid = locations.find((l) => l.id === selectedLocation && l.is_active !== false);
-      if (!valid) {
-        const firstActive = locations.find((l) => l.is_active !== false) || locations[0];
-        if (firstActive) updateSelectedLocation(firstActive.id);
-      }
-    }
-  }, [locations]);  
+  // Locations are "active" for Financial when they're active AND have the
+  // Financial module enabled in the unified location config.
+  const activeLocations = locations.filter((l) => l.is_active !== false && l.is_financial_enabled !== false);
 
-  const activeLocations = locations.filter((l) => l.is_active !== false);
+  // Default the selected location to the first Financial-enabled one once loaded.
+  useEffect(() => {
+    if (activeLocations.length > 0) {
+      const valid = activeLocations.find((l) => l.id === selectedLocation);
+      if (!valid) updateSelectedLocation(activeLocations[0].id);
+    }
+  }, [locations]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Synthetic tenant: carries the Square connection fields, but id/company_id
   // MUST be the company id — spread settings first so the financial_settings

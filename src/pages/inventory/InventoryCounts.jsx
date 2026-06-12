@@ -107,7 +107,7 @@ export default function InventoryCounts() {
     base44.entities.InventoryCount.list('-created_date', 50),
   ]).then(async ([locs, settings, itms, linv, areas, mappings, cnts]) => {
     const enrichedLocs = enrichLocationsWithInventorySettings(locs, settings);
-    const accessibleLocs = enrichedLocs.filter(l => canAccessLocation(l.id));
+    const accessibleLocs = enrichedLocs.filter(l => canAccessLocation(l.id) && l.is_inventory_enabled !== false);
     const accessibleLocIds = new Set(accessibleLocs.map(l => l.id));
     setLocations(accessibleLocs);
     setItems(itms);

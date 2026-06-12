@@ -12,11 +12,6 @@ import { CATEGORY_GROUPS, categoryGroupLabel, defaultIncludeForCategory, mergeIn
 import { GripVertical, Plus, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-const tabItems = [
-  { id: "locations", label: "Locations" },
-  { id: "categories", label: "Categories" },
-];
-
 const lowerName = (name) => String(name || "").trim().toLowerCase();
 
 const categoryDraggableId = (category) => lowerName(category.name);
@@ -26,10 +21,6 @@ const categoryEditKey = (category) =>
 
 export default function InventorySettings() {
   const { user, companyId } = useAuth();
-  const [activeTab, setActiveTab] = useState("locations");
-  const [locations, setLocations] = useState([]);
-  const [settings, setSettings] = useState([]);
-  const [vendors, setVendors] = useState([]);
   const [categoryRows, setCategoryRows] = useState([]);
   const [catalogItems, setCatalogItems] = useState([]);
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -54,16 +45,10 @@ export default function InventorySettings() {
 
     setLoading(true);
     try {
-      const [locs, rows, vendorRows, cats, items] = await Promise.all([
-        base44.entities.Location.filter({ company_id: companyId, is_active: true }),
-        base44.entities.InventoryLocationSetting.filter({ company_id: companyId }),
-        base44.entities.Vendor.filter({ company_id: companyId }),
+      const [cats, items] = await Promise.all([
         base44.entities.InventoryCategory.filter({ company_id: companyId }).catch(() => []),
         base44.entities.InventoryItem.filter({ company_id: companyId }).catch(() => []),
       ]);
-      setLocations(locs);
-      setSettings(rows);
-      setVendors(vendorRows);
       setCategoryRows(cats);
       setCatalogItems(items);
       setCategoryNameDrafts({});
@@ -75,23 +60,6 @@ export default function InventorySettings() {
   useEffect(() => {
     load();
   }, [companyId]);
-
-  const settingFor = (locationId) =>
-    settings.find((row) => row.location_id === locationId) || {
-      location_id: locationId,
-      type: "location",
-      preferred_stock_weeks: 1,
-    };
-
-  const updateLocal = (locationId, patch) => {
-    setSettings((current) => {
-      const existing = current.find((row) => row.location_id === locationId);
-      if (existing) {
-        return current.map((row) => (row.location_id === locationId ? { ...row, ...patch } : row));
-      }
-      return [...current, { location_id: locationId, company_id: companyId, type: "location", preferred_stock_weeks: 1, ...patch }];
-    });
-  };
 
   const updateCategoryLocal = (name, patch) => {
     const key = lowerName(name);
@@ -307,86 +275,6 @@ export default function InventorySettings() {
   const itemCountForCategory = (name) =>
     catalogItems.filter((item) => lowerName(item.category) === lowerName(name)).length;
 
-  const commissaryVendorFor = (location, vendorRows = vendors) =>
-    vendorRows.find((vendor) => vendor.commissary_location_id === location.id) ||
-    vendorRows.find((vendor) => vendor.is_commissary && vendor.name?.toLowerCase() === location.name.toLowerCase());
-
-  const syncCommissaryVendors = async (savedSettings) => {
-    let nextVendors = [...vendors];
-    const settingsByLocation = new Map(savedSettings.map((row) => [row.location_id, row]));
-    const activeLocationIds = locations.filter((location) => location.is_active !== false).map((location) => location.id);
-
-    for (const location of locations) {
-      const row = settingsByLocation.get(location.id) || settingFor(location.id);
-      const existing = commissaryVendorFor(location, nextVendors);
-
-      if (row.type === "commissary") {
-        const payload = {
-          company_id: companyId,
-          commissary_location_id: location.id,
-          name: location.name,
-          order_type: existing?.order_type || "email",
-          address: location.address || existing?.address || null,
-          notes: existing?.notes || "Auto-created from commissary location",
-          is_active: true,
-          is_commissary: true,
-          authorized_location_ids: existing?.authorized_location_ids?.length > 0 ? existing.authorized_location_ids : activeLocationIds,
-          location_settings: existing?.location_settings || [],
-          default_order_email: existing?.default_order_email || "",
-          default_cc_email: existing?.default_cc_email || "",
-          default_min_order_type: existing?.default_min_order_type || "none",
-          default_min_order_value: existing?.default_min_order_value ?? null,
-          default_delivery_days: existing?.default_delivery_days || [],
-          delivery_days: existing?.delivery_days || [],
-        };
-
-        if (existing) {
-          const updated = await base44.entities.Vendor.update(existing.id, payload);
-          nextVendors = nextVendors.map((vendor) => (vendor.id === existing.id ? updated : vendor));
-        } else {
-          const created = await base44.entities.Vendor.create(payload);
-          nextVendors = [...nextVendors, created];
-        }
-      } else if (existing?.commissary_location_id === location.id) {
-        const updated = await base44.entities.Vendor.update(existing.id, {
-          commissary_location_id: null,
-          is_commissary: false,
-          is_active: false,
-        });
-        nextVendors = nextVendors.map((vendor) => (vendor.id === existing.id ? updated : vendor));
-      }
-    }
-
-    setVendors(nextVendors);
-  };
-
-  const saveLocationSettings = async () => {
-    setSaving(true);
-    try {
-      const savedSettings = [];
-      for (const location of locations) {
-        const row = settingFor(location.id);
-        const payload = {
-          company_id: companyId,
-          location_id: location.id,
-          type: row.type || "location",
-          preferred_stock_weeks: Number(row.preferred_stock_weeks || 1),
-        };
-        const saved = row.id
-          ? await base44.entities.InventoryLocationSetting.update(row.id, payload)
-          : await base44.entities.InventoryLocationSetting.create(payload);
-        savedSettings.push(saved);
-      }
-      await syncCommissaryVendors(savedSettings);
-      toast.success("Inventory settings saved");
-      await load();
-    } catch (error) {
-      toast.error(error.message || "Failed to save inventory settings");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const saveCategories = async () => {
     setSaving(true);
     try {
@@ -438,10 +326,10 @@ export default function InventorySettings() {
     <div className="p-6 max-w-6xl mx-auto space-y-5">
       <PageHeader
         title="Inventory Settings"
-        subtitle="Configure inventory behavior for Taskr locations"
+        subtitle="Manage inventory categories. Per-location inventory settings now live in the location's control panel (Settings → Locations)."
         actions={
           <Button
-            onClick={activeTab === "locations" ? saveLocationSettings : saveCategories}
+            onClick={saveCategories}
             disabled={saving || loading}
             className="gap-1.5"
           >
@@ -450,76 +338,7 @@ export default function InventorySettings() {
         }
       />
 
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {tabItems.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-            className={`px-3 py-2 rounded-lg border text-sm font-medium whitespace-nowrap ${
-              activeTab === tab.id ? "bg-primary text-primary-foreground border-primary" : "bg-card border-border hover:bg-muted/50"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {activeTab === "locations" && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Location Inventory Roles</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {loading ? (
-              <div className="flex items-center justify-center h-32">
-                <div className="w-6 h-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-              </div>
-            ) : locations.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No active Taskr locations found.</p>
-            ) : (
-              locations.map((location) => {
-                const row = settingFor(location.id);
-                return (
-                  <div key={location.id} className="grid grid-cols-1 md:grid-cols-[1fr_180px_180px] gap-3 items-end border border-border rounded-lg p-3">
-                    <div>
-                      <Label>Location</Label>
-                      <p className="mt-2 text-sm font-medium">{location.name}</p>
-                      {location.address && <p className="text-xs text-muted-foreground">{location.address}</p>}
-                    </div>
-                    <div>
-                      <Label>Inventory Type</Label>
-                      <Select value={row.type || "location"} onValueChange={(type) => updateLocal(location.id, { type })}>
-                        <SelectTrigger className="mt-1">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="location">Location</SelectItem>
-                          <SelectItem value="commissary">Commissary</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <Label>Stock Weeks</Label>
-                      <Input
-                        className="mt-1"
-                        type="number"
-                        min="0"
-                        step="0.5"
-                        value={row.preferred_stock_weeks ?? 1}
-                        onChange={(event) => updateLocal(location.id, { preferred_stock_weeks: event.target.value })}
-                      />
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {activeTab === "categories" && (
-        <Card>
+      <Card>
           <CardHeader>
             <CardTitle>Inventory Categories</CardTitle>
           </CardHeader>
@@ -543,7 +362,7 @@ export default function InventorySettings() {
                 </Select>
               </div>
               <Button type="button" className="gap-1" onClick={addCategory} disabled={saving || !newCategoryName.trim()}>
-                <Plus className="w-4 h-4" /> {saving && activeTab === "categories" ? "Saving..." : "Add"}
+                <Plus className="w-4 h-4" /> {saving ? "Saving..." : "Add"}
               </Button>
             </div>
 
@@ -637,7 +456,6 @@ export default function InventorySettings() {
             </DragDropContext>
           </CardContent>
         </Card>
-      )}
     </div>
   );
 }

@@ -52,7 +52,7 @@ export default function LocationStock() {
     base44.entities.ItemStorageArea.list(),
   ]).then(([locs, settings, itms, linv, areas, mappings]) => {
     const enrichedLocs = enrichLocationsWithInventorySettings(locs, settings);
-    const filteredLocs = enrichedLocs.filter(l => canAccessLocation(l.id));
+    const filteredLocs = enrichedLocs.filter(l => canAccessLocation(l.id) && l.is_inventory_enabled !== false);
     setLocations(filteredLocs);
     setItems(itms);
     setLocInv(linv);

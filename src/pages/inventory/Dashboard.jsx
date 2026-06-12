@@ -52,7 +52,7 @@ export default function Dashboard() {
       locationsQuery.data || [],
       settingsQuery.data || []
     );
-    return enriched.filter((location) => canAccessLocation(location.id));
+    return enriched.filter((location) => canAccessLocation(location.id) && location.is_inventory_enabled !== false);
   }, [locationsQuery.data, settingsQuery.data, canAccessLocation]);
 
   const locInv = useMemo(

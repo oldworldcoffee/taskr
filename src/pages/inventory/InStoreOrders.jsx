@@ -32,7 +32,7 @@ export default function InStoreOrders() {
       base44.entities.InventoryItem.filter({ is_active: true, company_id: companyId }),
       base44.entities.Order.filter({ company_id: companyId }, '-created_date', 100),
     ]);
-    const accessibleLocIds = new Set(locs.filter(l => canAccessLocation(l.id)).map(l => l.id));
+    const accessibleLocIds = new Set(locs.filter(l => canAccessLocation(l.id) && l.is_inventory_enabled !== false).map(l => l.id));
     const instoreVendorIds = new Set(vends.filter(v => v.order_type === 'instore').map(v => v.id));
     setLocations(locs);
     setVendors(vends);
