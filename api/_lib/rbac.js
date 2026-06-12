@@ -13,7 +13,13 @@ import { httpError, requireManagerOrAdmin } from './taskr.js';
 const MODULES = ['task_checklist', 'inventory', 'roastery', 'financial'];
 const BASE_ROLES = ['employee', 'supervisor', 'manager', 'admin', 'super_admin'];
 const AUTO_GRANT_ROLES = new Set(['manager', 'admin', 'super_admin']);
-const ROASTERY_PERM_KEYS = ['view_production', 'manage_production', 'inventory_adjustments', 'reporting'];
+
+// Action-level permission keys per module (stored in the `perms` jsonb on
+// matrix rows and role templates). Modules absent here have none.
+export const MODULE_PERM_KEYS = {
+  roastery: ['view_production', 'manage_production', 'inventory_adjustments', 'reporting'],
+  inventory: ['take_inventory', 'place_orders', 'intake_invoices', 'manage_pools', 'manage_catalog'],
+};
 
 const RBAC_FUNCTIONS = new Set([
   'getRoles',
@@ -41,10 +47,18 @@ function slugify(value) {
     .slice(0, 48) || 'role';
 }
 
-function cleanRoasteryPerms(input) {
+function cleanPerms(module, input) {
+  const keys = MODULE_PERM_KEYS[module];
+  if (!keys) return {};
   const perms = {};
-  for (const key of ROASTERY_PERM_KEYS) perms[key] = Boolean(input?.[key]);
+  for (const key of keys) perms[key] = Boolean(input?.[key]);
   return perms;
+}
+
+function fullPerms(module) {
+  const keys = MODULE_PERM_KEYS[module];
+  if (!keys) return {};
+  return Object.fromEntries(keys.map((k) => [k, true]));
 }
 
 // Load the target user, ensuring the caller can manage them (same company, or
@@ -85,7 +99,7 @@ async function loadRoleTemplate(client, targetUser) {
       .select('*')
       .eq('role_id', roleRow.id);
     for (const row of rows || []) {
-      defaults[row.module] = { enabled: !!row.enabled, roastery_perms: row.roastery_perms || {} };
+      defaults[row.module] = { enabled: !!row.enabled, perms: row.perms || {} };
     }
   }
   return { roleRow, baseRole, defaults };
@@ -96,14 +110,14 @@ async function loadRoleTemplate(client, targetUser) {
 async function syncFeaturePermissionShadow(client, userId) {
   const { data: rows, error } = await client
     .from('user_location_module_access')
-    .select('module, enabled, roastery_perms')
+    .select('module, enabled, perms')
     .eq('user_id', userId);
   if (error) throw error;
 
   const anyEnabled = (mod) => (rows || []).some((r) => r.module === mod && r.enabled);
   const roastery = { enabled: anyEnabled('roastery') };
-  for (const key of ROASTERY_PERM_KEYS) {
-    roastery[key] = (rows || []).some((r) => r.module === 'roastery' && r.enabled && r.roastery_perms?.[key]);
+  for (const key of MODULE_PERM_KEYS.roastery) {
+    roastery[key] = (rows || []).some((r) => r.module === 'roastery' && r.enabled && r.perms?.[key]);
   }
 
   const featurePermissions = {
@@ -141,7 +155,7 @@ async function getRoles(client, user) {
     for (const row of defaults || []) {
       (defaultsByRole[row.role_id] ||= {})[row.module] = {
         enabled: !!row.enabled,
-        roastery_perms: row.roastery_perms || {},
+        perms: row.perms || {},
       };
     }
   }
@@ -209,7 +223,7 @@ async function saveRole(client, user, body) {
       role_id: roleId,
       module,
       enabled: module === 'task_checklist' ? true : Boolean(entry.enabled),
-      roastery_perms: module === 'roastery' ? cleanRoasteryPerms(entry.roastery_perms) : {},
+      perms: cleanPerms(module, entry.perms),
     };
   });
   const { error: upsertError } = await client
@@ -281,29 +295,29 @@ async function getUserModuleAccess(client, user, body) {
   for (const location of locations || []) {
     for (const module of MODULES) {
       const override = overrideByKey[`${location.id}:${module}`];
-      const def = template.defaults[module] || { enabled: false, roastery_perms: {} };
+      const def = template.defaults[module] || { enabled: false, perms: {} };
       let source;
       let enabled;
-      let roasteryPerms;
+      let perms;
       if (roleAuto) {
         source = 'role_auto';
         enabled = true;
-        roasteryPerms = { view_production: true, manage_production: true, inventory_adjustments: true, reporting: true };
+        perms = fullPerms(module);
       } else if (override) {
         source = 'override';
         enabled = !!override.enabled;
-        roasteryPerms = override.roastery_perms || {};
+        perms = override.perms || {};
       } else {
         source = 'role_default';
         enabled = !!def.enabled;
-        roasteryPerms = def.roastery_perms || {};
+        perms = def.perms || {};
       }
       cells.push({
         location_id: location.id,
         module,
         enabled,
         source,
-        roastery_perms: roasteryPerms,
+        perms,
       });
     }
   }
@@ -352,7 +366,7 @@ async function saveUserModuleAccess(client, user, body) {
       location_id: entry.location_id,
       module: entry.module,
       enabled: Boolean(entry.enabled),
-      roastery_perms: entry.module === 'roastery' ? cleanRoasteryPerms(entry.roastery_perms) : {},
+      perms: cleanPerms(entry.module, entry.perms),
     });
   }
 
@@ -440,7 +454,7 @@ export async function materializeMatrixFromRole(client, { userId, companyId, rol
         location_id: locationId,
         module: def.module,
         enabled: true,
-        roastery_perms: def.module === 'roastery' ? def.roastery_perms || {} : {},
+        perms: def.perms || {},
       });
     }
   }

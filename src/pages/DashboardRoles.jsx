@@ -33,11 +33,28 @@ const ROASTERY_PERMISSIONS = [
   { key: "reporting", label: "Reporting" },
 ];
 
+const INVENTORY_PERMISSIONS = [
+  { key: "take_inventory", label: "Take inventory" },
+  { key: "place_orders", label: "Place orders" },
+  { key: "intake_invoices", label: "Intake invoices" },
+  { key: "manage_pools", label: "Manage pools" },
+  { key: "manage_catalog", label: "Manage catalog" },
+];
+
+const MODULE_SUB_PERMS = { inventory: INVENTORY_PERMISSIONS, roastery: ROASTERY_PERMISSIONS };
+
+// New-role inventory defaults match the supervisor pattern: operate, don't administer.
+const INVENTORY_DEFAULT_PERMS = { take_inventory: true, place_orders: true, intake_invoices: true };
+
 const EMPTY_DRAFT = () => ({
   id: null,
   label: "",
   base_role: "supervisor",
-  modules: { inventory: { enabled: false }, roastery: { enabled: false, perms: {} }, financial: { enabled: false } },
+  modules: {
+    inventory: { enabled: false, perms: { ...INVENTORY_DEFAULT_PERMS } },
+    roastery: { enabled: false, perms: {} },
+    financial: { enabled: false },
+  },
 });
 
 function draftFromRole(role) {
@@ -47,9 +64,9 @@ function draftFromRole(role) {
     label: role.label,
     base_role: role.base_role,
     modules: {
-      inventory: { enabled: !!modules.inventory?.enabled },
+      inventory: { enabled: !!modules.inventory?.enabled, perms: modules.inventory?.perms || {} },
       financial: { enabled: !!modules.financial?.enabled },
-      roastery: { enabled: !!modules.roastery?.enabled, perms: modules.roastery?.roastery_perms || {} },
+      roastery: { enabled: !!modules.roastery?.enabled, perms: modules.roastery?.perms || {} },
     },
   };
 }
@@ -89,9 +106,9 @@ export default function DashboardRoles() {
     setSaving(true);
     try {
       const modules = [
-        { module: "inventory", enabled: draft.modules.inventory.enabled },
+        { module: "inventory", enabled: draft.modules.inventory.enabled, perms: draft.modules.inventory.perms },
         { module: "financial", enabled: draft.modules.financial.enabled },
-        { module: "roastery", enabled: draft.modules.roastery.enabled, roastery_perms: draft.modules.roastery.perms },
+        { module: "roastery", enabled: draft.modules.roastery.enabled, perms: draft.modules.roastery.perms },
       ];
       await base44.functions.invoke("saveRole", {
         data: { id: draft.id, label: draft.label.trim(), base_role: draft.base_role, modules },
@@ -228,13 +245,13 @@ export default function DashboardRoles() {
                         />
                         <span className="text-sm">{m.label}</span>
                       </label>
-                      {m.key === "roastery" && draft.modules.roastery.enabled && (
+                      {MODULE_SUB_PERMS[m.key] && draft.modules[m.key].enabled && (
                         <div className="ml-7 border-l border-border pl-3 space-y-1">
-                          {ROASTERY_PERMISSIONS.map((p) => (
+                          {MODULE_SUB_PERMS[m.key].map((p) => (
                             <label key={p.key} className="flex items-center gap-3 py-1 cursor-pointer">
                               <Checkbox
-                                checked={!!draft.modules.roastery.perms?.[p.key]}
-                                onCheckedChange={(c) => setModule("roastery", { perms: { ...(draft.modules.roastery.perms || {}), [p.key]: !!c } })}
+                                checked={!!draft.modules[m.key].perms?.[p.key]}
+                                onCheckedChange={(c) => setModule(m.key, { perms: { ...(draft.modules[m.key].perms || {}), [p.key]: !!c } })}
                               />
                               <span className="text-xs">{p.label}</span>
                             </label>

@@ -261,21 +261,42 @@ export const AuthProvider = ({ children }) => {
     [userHasFeatureAtLocation]
   );
 
-  // Roastery sub-permissions: view_production, manage_production,
-  // inventory_adjustments, reporting. Admins/managers get all. Optional
-  // locationId scopes the check to a single location.
-  const hasRoasteryPermission = useCallback((permission, locationId = null) => {
+  // Action-level permission within a module (e.g. inventory 'place_orders',
+  // roastery 'manage_production'). Admins/managers get all. Optional locationId
+  // scopes the check to a single location; otherwise "granted anywhere".
+  const hasModulePermission = useCallback((module, permission, locationId = null) => {
     if (['admin', 'manager', 'super_admin'].includes(user?.role)) return true;
     const rows = moduleAccess;
     if (!rows || rows.length === 0) {
-      const roastery = (user?.feature_permissions || {}).roastery;
-      return Boolean(roastery && typeof roastery === 'object' && roastery[permission]);
+      // Legacy fallback (no matrix rows yet): roastery sub-perms lived in
+      // feature_permissions.roastery; a legacy inventory grant covered the
+      // operational actions but never pools/catalog (manager-only then).
+      if (module === 'roastery') {
+        const roastery = (user?.feature_permissions || {}).roastery;
+        return Boolean(roastery && typeof roastery === 'object' && roastery[permission]);
+      }
+      if (module === 'inventory') {
+        return (
+          ['take_inventory', 'place_orders', 'intake_invoices'].includes(permission) &&
+          legacyHasFeature('inventory')
+        );
+      }
+      return false;
     }
     const relevant = rows.filter(
-      (r) => r.module === 'roastery' && r.enabled && (!locationId || r.location_id === locationId)
+      (r) => r.module === module && r.enabled && (!locationId || r.location_id === locationId)
     );
-    return relevant.some((r) => r.roastery_perms && r.roastery_perms[permission]);
-  }, [user?.role, moduleAccess, user?.feature_permissions]);
+    return relevant.some((r) => r.perms && r.perms[permission]);
+  }, [user?.role, moduleAccess, user?.feature_permissions, legacyHasFeature]);
+
+  const hasRoasteryPermission = useCallback(
+    (permission, locationId = null) => hasModulePermission('roastery', permission, locationId),
+    [hasModulePermission]
+  );
+  const hasInventoryPermission = useCallback(
+    (permission, locationId = null) => hasModulePermission('inventory', permission, locationId),
+    [hasModulePermission]
+  );
 
   // The locations this user may access (admins/unassigned see all).
   const accessibleLocations = allLocations.filter((loc) => canAccessLocation(loc.id));
@@ -341,7 +362,9 @@ export const AuthProvider = ({ children }) => {
       hasRoasteryLocation,
       userHasFeature,
       userHasFeatureAtLocation,
+      hasModulePermission,
       hasRoasteryPermission,
+      hasInventoryPermission,
       isFeatureEnabledForLocation,
       isFeatureEnabledAnywhere,
       accessibleLocationsForFeature

@@ -55,22 +55,24 @@ const checklistItems = [
   { path: "/dashboard/checklists/setup", label: "Setup", icon: Wrench },
 ];
 
+// `invPerm` gates an item on an inventory action permission (admins/managers
+// always pass). Items without one are visible to anyone with the module.
 const inventoryItems = [
   { path: "/dashboard/inventory", label: "Overview", icon: LayoutDashboard, exact: true },
   { path: "/dashboard/inventory/catalog", label: "Catalog", icon: Package },
   { path: "/dashboard/inventory/stock", label: "Stock", icon: MapPin },
-  { path: "/dashboard/inventory/counts", label: "Counts", icon: ClipboardList },
-  { path: "/dashboard/inventory/orders", label: "Orders", icon: ShoppingCart },
-  { path: "/dashboard/inventory/online-orders", label: "Online Orders", icon: Globe },
-  { path: "/dashboard/inventory/instore-orders", label: "In-Store Shopping", icon: ShoppingBasket },
-  { path: "/dashboard/inventory/commissary", label: "Commissary", icon: Store },
-  { path: "/dashboard/inventory/transfers", label: "Transfers", icon: ArrowLeftRight },
-  { path: "/dashboard/inventory/invoices", label: "Invoices", icon: FileText },
-  { path: "/dashboard/inventory/pools", label: "Pools", icon: Layers },
+  { path: "/dashboard/inventory/counts", label: "Counts", icon: ClipboardList, invPerm: "take_inventory" },
+  { path: "/dashboard/inventory/orders", label: "Orders", icon: ShoppingCart, invPerm: "place_orders" },
+  { path: "/dashboard/inventory/online-orders", label: "Online Orders", icon: Globe, invPerm: "place_orders" },
+  { path: "/dashboard/inventory/instore-orders", label: "In-Store Shopping", icon: ShoppingBasket, invPerm: "place_orders" },
+  { path: "/dashboard/inventory/commissary", label: "Commissary", icon: Store, invPerm: "place_orders" },
+  { path: "/dashboard/inventory/transfers", label: "Transfers", icon: ArrowLeftRight, invPerm: "place_orders" },
+  { path: "/dashboard/inventory/invoices", label: "Invoices", icon: FileText, invPerm: "intake_invoices" },
+  { path: "/dashboard/inventory/pools", label: "Pools", icon: Layers, invPerm: "manage_pools" },
   { path: "/dashboard/inventory/vendors", label: "Vendors", icon: Truck },
   { path: "/dashboard/inventory/reports", label: "Reports", icon: BarChart3 },
-  { path: "/dashboard/inventory/recipes-pricing", label: "Recipes & Pricing", icon: Calculator },
-  { path: "/dashboard/inventory/settings", label: "Settings", icon: Settings },
+  { path: "/dashboard/inventory/recipes-pricing", label: "Recipes & Pricing", icon: Calculator, roles: ["admin", "manager"] },
+  { path: "/dashboard/inventory/settings", label: "Settings", icon: Settings, roles: ["admin", "manager"] },
 ];
 
 const roasteryItems = [
@@ -104,9 +106,13 @@ const teamHubItems = [
 
 const primaryItems = [
   { path: "/dashboard/equipment", label: "Equipment", icon: Wrench, roles: ["admin", "manager"] },
+];
+
+const settingsItems = [
   { path: "/dashboard/employees", label: "Employees", icon: Users, roles: ["admin", "manager"] },
   { path: "/dashboard/roles", label: "Roles", icon: ShieldCheck, roles: ["admin"] },
-  { path: "/dashboard/settings", label: "Settings", icon: Settings, roles: ["admin"] },
+  { path: "/dashboard/locations", label: "Locations", icon: MapPin, roles: ["admin"] },
+  { path: "/dashboard/settings", label: "General", icon: Settings, roles: ["admin"] },
 ];
 
 const canSeeItem = (item, role) => !item.roles || item.roles.includes(role);
@@ -213,21 +219,26 @@ function NavGroup({
 
 function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, unreadForum, markChatSeen, markForumSeen }) {
   const role = user?.role;
-  const { isFeatureEnabledAnywhere } = useAuth();
+  const { isFeatureEnabledAnywhere, hasInventoryPermission } = useAuth();
   // company AND location AND user: a module shows if it's enabled at any location
   // the user can access (per-location filtering happens inside each module page).
   const checklistsEnabled = isFeatureEnabledAnywhere("task_checklist", company);
   const inventoryEnabled = isFeatureEnabledAnywhere("inventory", company);
   const roasteryEnabled = isFeatureEnabledAnywhere("roastery", company);
   const financialEnabled = isFeatureEnabledAnywhere("financial", company);
+  const visibleInventoryItems = inventoryItems.filter(
+    (item) => canSeeItem(item, role) && (!item.invPerm || hasInventoryPermission(item.invPerm))
+  );
   const visibleTeamHubItems = teamHubItems.filter((item) => canSeeItem(item, role));
   const visiblePrimaryItems = primaryItems.filter((item) => canSeeItem(item, role));
+  const visibleSettingsItems = settingsItems.filter((item) => canSeeItem(item, role));
   const isItemActive = (item) => item.exact ? isExact(item.path) : isActive(item.path);
   const checklistsActive = isActive("/dashboard/checklists") || isActive("/dashboard/checklist") || isActive("/dashboard/issues") || isActive("/dashboard/deposits") || isActive("/dashboard/review");
   const inventoryActive = isActive("/dashboard/inventory");
   const roasteryActive = isActive("/dashboard/roastery");
   const financialActive = isActive("/dashboard/financial");
   const teamHubActive = visibleTeamHubItems.some(isItemActive);
+  const settingsActive = visibleSettingsItems.some(isItemActive);
   const teamHubBadge = (unreadChat || 0) + (unreadForum || 0);
 
   return (
@@ -262,7 +273,7 @@ function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, un
         <NavGroup
           label="Inventory"
           icon={PackageCheck}
-          items={inventoryItems}
+          items={visibleInventoryItems}
           active={inventoryActive}
           isItemActive={isItemActive}
           onNavigate={onNavigate}
@@ -331,6 +342,21 @@ function NavLinks({ isActive, isExact, onNavigate, user, company, unreadChat, un
           markForumSeen={markForumSeen}
         />
       ))}
+
+      {visibleSettingsItems.length > 0 && (
+        <NavGroup
+          label="Settings"
+          icon={Settings}
+          items={visibleSettingsItems}
+          active={settingsActive}
+          isItemActive={isItemActive}
+          onNavigate={onNavigate}
+          unreadChat={unreadChat}
+          unreadForum={unreadForum}
+          markChatSeen={markChatSeen}
+          markForumSeen={markForumSeen}
+        />
+      )}
 
       <div className="pt-2 mt-2 border-t border-sidebar-border/50 space-y-1">
         <Link

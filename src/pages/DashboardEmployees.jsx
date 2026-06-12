@@ -45,6 +45,20 @@ const ROASTERY_PERMISSIONS = [
   { key: "reporting", label: "Reporting" },
 ];
 
+const INVENTORY_PERMISSIONS = [
+  { key: "take_inventory", label: "Take inventory" },
+  { key: "place_orders", label: "Place orders" },
+  { key: "intake_invoices", label: "Intake invoices" },
+  { key: "manage_pools", label: "Manage pools" },
+  { key: "manage_catalog", label: "Manage catalog" },
+];
+
+// Pre-checked actions when an admin first enables inventory for a user:
+// day-to-day operations on; pools/catalog stay manager-level unless granted.
+const INVENTORY_DEFAULT_PERMS = { take_inventory: true, place_orders: true, intake_invoices: true };
+
+const MODULE_SUB_PERMS = { inventory: INVENTORY_PERMISSIONS, roastery: ROASTERY_PERMISSIONS };
+
 // A role "token" encodes whether it is a system role (sys:<key>) or a custom
 // role (custom:<id>). Selecting a token yields { role: <base role>, role_id }.
 function buildRoleOptions(customRoles = []) {
@@ -117,10 +131,11 @@ const LocationSelector = ({ selected, onChange, locations }) => {
 
 // Per-(location, module) access grid. `cells` is a flat list keyed by
 // `${location_id}:${module}`; edits are lifted to the parent via onChange.
+// Inventory and roastery expand into action-level checkboxes when enabled.
 const ModuleMatrix = ({ cells, locations, onChange }) => {
   const cellFor = (locationId, module) =>
     cells.find((c) => c.location_id === locationId && c.module === module) ||
-    { location_id: locationId, module, enabled: false, roastery_perms: {}, source: "role_default" };
+    { location_id: locationId, module, enabled: false, perms: {}, source: "role_default" };
 
   const setCell = (locationId, module, patch) => {
     const existing = cellFor(locationId, module);
@@ -131,52 +146,67 @@ const ModuleMatrix = ({ cells, locations, onChange }) => {
     ]);
   };
 
+  const toggleModule = (locationId, module, checked) => {
+    const patch = { enabled: checked };
+    if (checked && module === "inventory") {
+      const existing = cellFor(locationId, module);
+      // Seed sensible defaults the first time inventory is enabled here.
+      if (!Object.values(existing.perms || {}).some(Boolean)) {
+        patch.perms = { ...INVENTORY_DEFAULT_PERMS };
+      }
+    }
+    setCell(locationId, module, patch);
+  };
+
   if (!locations.length) {
     return <p className="text-xs text-muted-foreground">No active locations to configure.</p>;
   }
 
   return (
     <div className="space-y-3">
-      {locations.map((loc) => {
-        const roastery = cellFor(loc.id, "roastery");
-        return (
-          <div key={loc.id} className="rounded-lg border border-border p-3">
-            <p className="text-sm font-medium mb-2">{loc.name}</p>
-            <div className="flex flex-wrap gap-x-6 gap-y-2">
-              {MATRIX_MODULES.map((m) => {
-                const cell = cellFor(loc.id, m.key);
-                return (
-                  <label key={m.key} className="flex items-center gap-2 cursor-pointer">
-                    <Checkbox
-                      checked={!!cell.enabled}
-                      onCheckedChange={(c) => setCell(loc.id, m.key, { enabled: !!c })}
-                    />
-                    <span className="text-sm">{m.label}</span>
-                  </label>
-                );
-              })}
-            </div>
-            {roastery.enabled && (
-              <div className="mt-2 ml-1 border-l border-border pl-3 flex flex-wrap gap-x-5 gap-y-1">
-                {ROASTERY_PERMISSIONS.map((p) => (
-                  <label key={p.key} className="flex items-center gap-2 cursor-pointer">
-                    <Checkbox
-                      checked={!!roastery.roastery_perms?.[p.key]}
-                      onCheckedChange={(c) =>
-                        setCell(loc.id, "roastery", {
-                          enabled: true,
-                          roastery_perms: { ...(roastery.roastery_perms || {}), [p.key]: !!c },
-                        })
-                      }
-                    />
-                    <span className="text-xs">{p.label}</span>
-                  </label>
-                ))}
-              </div>
-            )}
+      {locations.map((loc) => (
+        <div key={loc.id} className="rounded-lg border border-border p-3">
+          <p className="text-sm font-medium mb-2">{loc.name}</p>
+          <div className="flex flex-wrap gap-x-6 gap-y-2">
+            {MATRIX_MODULES.map((m) => {
+              const cell = cellFor(loc.id, m.key);
+              return (
+                <label key={m.key} className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={!!cell.enabled}
+                    onCheckedChange={(c) => toggleModule(loc.id, m.key, !!c)}
+                  />
+                  <span className="text-sm">{m.label}</span>
+                </label>
+              );
+            })}
           </div>
-        );
-      })}
+          {MATRIX_MODULES.filter((m) => MODULE_SUB_PERMS[m.key] && cellFor(loc.id, m.key).enabled).map((m) => {
+            const cell = cellFor(loc.id, m.key);
+            return (
+              <div key={m.key} className="mt-2 ml-1 border-l border-border pl-3">
+                <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide mb-1">{m.label} actions</p>
+                <div className="flex flex-wrap gap-x-5 gap-y-1">
+                  {MODULE_SUB_PERMS[m.key].map((p) => (
+                    <label key={p.key} className="flex items-center gap-2 cursor-pointer">
+                      <Checkbox
+                        checked={!!cell.perms?.[p.key]}
+                        onCheckedChange={(c) =>
+                          setCell(loc.id, m.key, {
+                            enabled: true,
+                            perms: { ...(cell.perms || {}), [p.key]: !!c },
+                          })
+                        }
+                      />
+                      <span className="text-xs">{p.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 };
@@ -347,7 +377,7 @@ export default function DashboardEmployees() {
             location_id: c.location_id,
             module: c.module,
             enabled: !!c.enabled,
-            roastery_perms: c.roastery_perms || {},
+            perms: c.perms || {},
           }));
         await base44.functions.invoke("saveUserModuleAccess", {
           data: { userId: editUser.id, entries },
@@ -586,7 +616,8 @@ export default function DashboardEmployees() {
               ) : (
                 <>
                   <p className="text-xs text-muted-foreground mb-2">
-                    Enable modules per location. Checklists are always on. Roastery permissions appear when Roastery is enabled.
+                    Enable modules per location. Checklists are always on. Inventory and Roastery expand into
+                    action-level permissions when enabled.
                   </p>
                   <ModuleMatrix cells={matrixCells} locations={activeLocations} onChange={setMatrixCells} />
                 </>
