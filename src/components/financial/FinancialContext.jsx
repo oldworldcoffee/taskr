@@ -73,8 +73,13 @@ export function FinancialProvider({ children }) {
 
   const activeLocations = locations.filter((l) => l.is_active !== false);
 
-  // Synthetic tenant: id == company_id, plus Square connection fields.
-  const tenant = companyId ? { id: companyId, ...(settings || {}) } : null;
+  // Synthetic tenant: carries the Square connection fields, but id/company_id
+  // MUST be the company id — spread settings first so the financial_settings
+  // row's own primary key can't overwrite them (it would break every
+  // company-scoped schedule/shift query).
+  const tenant = companyId
+    ? { ...(settings || {}), id: companyId, company_id: companyId }
+    : null;
   // Synthetic membership from taskr role (admins/managers act as owners here).
   const membership = user
     ? { role: ["admin", "super_admin"].includes(user.role) ? "owner" : user.role }
