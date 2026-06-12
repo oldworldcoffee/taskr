@@ -54,13 +54,14 @@ export function resolveAssignees(todo, allUsers = [], groups = []) {
 /**
  * Compute the due dates (yyyy-MM-dd strings) a todo produces between
  * windowStart and windowEnd (inclusive), based on its recurrence rule.
- * windowStart/windowEnd are Date objects.
+ * windowStart/windowEnd are Date objects. A one-off with no due date is an
+ * "anytime" task: it yields a single null due date regardless of the window.
  */
 export function computeDueDates(todo, windowStart, windowEnd) {
   if (windowEnd < windowStart) return [];
 
   if (todo.recurrence === "one_off") {
-    if (!todo.due_date) return [];
+    if (!todo.due_date) return [null];
     const due = parseISO(todo.due_date);
     return due >= windowStart && due <= windowEnd ? [todo.due_date] : [];
   }
@@ -104,7 +105,7 @@ export async function ensureOccurrences({
   companyId,
   existingOccurrences = [],
 }) {
-  if (!todo.is_active) return [];
+  if (!todo.is_active || todo.archived_at) return [];
   const dueDates = computeDueDates(todo, windowStart, windowEnd);
   if (dueDates.length === 0 || assignees.length === 0) return [];
 
@@ -176,14 +177,57 @@ export async function completeOccurrence({ occurrence, todo, user }) {
     }
   }
 
+  // Finished one-offs archive themselves so they stop cluttering the admin
+  // list. Best-effort, like the notification above.
+  try {
+    await maybeAutoArchiveOneOff(todo);
+  } catch (e) {
+    console.error("auto-archive check failed", e);
+  }
+
   return updated;
 }
 
-/** Reopen a completed occurrence (no notification). */
-export function reopenOccurrence(occurrence) {
-  return base44.entities.TodoOccurrence.update(occurrence.id, {
+/**
+ * Archive a one-off todo once no pending occurrences remain. Queries the
+ * server rather than trusting loaded occurrences: employees only load their
+ * own rows, and one-offs can have co-assignees. Known accepted gaps (archive
+ * is reversible — reopen un-archives and admins have Restore): two assignees
+ * completing the last two occurrences at once may each still see the other's
+ * row pending and skip the archive; an assignee added via role/group after
+ * the admin saved, whose occurrence isn't generated yet, could cause a
+ * premature archive.
+ */
+async function maybeAutoArchiveOneOff(todo) {
+  if (!todo || todo.recurrence !== "one_off" || todo.archived_at) return;
+  const pending = await base44.entities.TodoOccurrence.filter(
+    { todo_id: todo.id, status: "pending" },
+    undefined,
+    1,
+    ["id"]
+  );
+  if (pending.length > 0) return;
+  await base44.entities.Todo.update(todo.id, {
+    archived_at: new Date().toISOString(),
+  });
+}
+
+/**
+ * Reopen a completed occurrence (no notification). If its one-off todo was
+ * auto-archived, restore it so the reopened task shows up again.
+ */
+export async function reopenOccurrence(occurrence, todo) {
+  const updated = await base44.entities.TodoOccurrence.update(occurrence.id, {
     status: "pending",
     completed_at: null,
     completed_by_email: null,
   });
+  if (todo?.archived_at && todo.recurrence === "one_off") {
+    try {
+      await base44.entities.Todo.update(todo.id, { archived_at: null });
+    } catch (e) {
+      console.error("un-archive on reopen failed", e);
+    }
+  }
+  return updated;
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/lib/AuthContext";
 import { useQuery } from "@tanstack/react-query";
+import { fetchServerSeenMap, pushSeenToServer, FORUM_READS_KEY } from "@/lib/chatReads";
 
 const LS_KEY_CHAT = "last_seen_chat_v2"; // per-channel map: { channelId: isoString }
 const LS_KEY_FORUM = "last_seen_forum";
@@ -53,10 +54,58 @@ export function getForumLastSeen() {
 }
 
 export function markForumSeenAt(seenAt = new Date()) {
+  const iso = toSeenISOString(seenAt);
   if (typeof localStorage !== "undefined") {
-    localStorage.setItem(LS_KEY_FORUM, toSeenISOString(seenAt));
+    localStorage.setItem(LS_KEY_FORUM, iso);
   }
+  pushSeenToServer({ [FORUM_READS_KEY]: iso });
   notifySeenStateChanged();
+}
+
+// Merge the server copy of the seen state into local storage (newest mark per
+// channel wins), then push back any marks where this device is newer. This is
+// what lets a fresh browser session — or a read on another device — clear the
+// badge instead of re-counting everything since epoch.
+async function syncSeenStateWithServer() {
+  const serverMap = await fetchServerSeenMap();
+  if (!serverMap) return;
+
+  const map = getLastSeenMap();
+  const localNewer = {};
+  let changed = false;
+
+  for (const [key, iso] of Object.entries(serverMap)) {
+    if (key === FORUM_READS_KEY) continue;
+    const server = safeDate(iso);
+    const local = safeDate(map[key]);
+    if (server && (!local || server > local)) {
+      map[key] = server.toISOString();
+      changed = true;
+    }
+  }
+  for (const [key, iso] of Object.entries(map)) {
+    const local = safeDate(iso);
+    const server = safeDate(serverMap[key]);
+    if (local && (!server || local > server)) {
+      localNewer[key] = local.toISOString();
+    }
+  }
+  if (changed) persistLastSeenMap(map);
+
+  // The forum mark lives under its own localStorage key, not in the map.
+  const serverForum = safeDate(serverMap[FORUM_READS_KEY]);
+  const localForum = getForumLastSeen();
+  if (serverForum && serverForum > localForum) {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(LS_KEY_FORUM, serverForum.toISOString());
+    }
+    changed = true;
+  } else if (localForum.getTime() > 0 && (!serverForum || localForum > serverForum)) {
+    localNewer[FORUM_READS_KEY] = localForum.toISOString();
+  }
+
+  if (Object.keys(localNewer).length) pushSeenToServer(localNewer);
+  if (changed) notifySeenStateChanged();
 }
 
 export function useUnreadCounts() {
@@ -80,6 +129,18 @@ export function useUnreadCounts() {
       window.removeEventListener("storage", handleStorage);
     };
   }, []);
+
+  // Pull the server-side read marks alongside the message polling so reads on
+  // another device (or before this session existed) clear the badge here too.
+  useQuery({
+    queryKey: ["chat-seen-server-sync", user?.email],
+    queryFn: async () => {
+      await syncSeenStateWithServer();
+      return true;
+    },
+    enabled: !!user?.email,
+    refetchInterval: 30000,
+  });
 
   const { data: recentMessages = [] } = useQuery({
     queryKey: ["unread-chat-messages", user?.company_id],
@@ -175,10 +236,7 @@ export function useUnreadCounts() {
 
   const markChatSeen = (channelId, seenAt) => {
     if (channelId) {
-      const map = getLastSeenMap();
-      map[channelId] = toSeenISOString(seenAt);
-      persistLastSeenMap(map);
-      notifySeenStateChanged();
+      markChannelSeen(channelId, seenAt);
       return;
     }
     // Mark everything seen. Cover the newest loaded message too, so a just-
@@ -210,8 +268,10 @@ export function getChannelLastSeen(channelId) {
 export function markChannelSeen(channelId, seenAt) {
   if (!channelId) return;
   const map = getLastSeenMap();
-  map[channelId] = toSeenISOString(seenAt);
+  const iso = toSeenISOString(seenAt);
+  map[channelId] = iso;
   persistLastSeenMap(map);
+  pushSeenToServer({ [channelId]: iso });
   notifySeenStateChanged();
 }
 
@@ -225,6 +285,7 @@ export function markAllChatSeen(seenAt) {
   if (!prev || next > prev) {
     map[ALL_CHAT_CHANNELS] = next.toISOString();
     persistLastSeenMap(map);
+    pushSeenToServer({ [ALL_CHAT_CHANNELS]: next.toISOString() });
   }
   notifySeenStateChanged();
 }

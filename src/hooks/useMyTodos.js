@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { base44 } from "@/api/base44Client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/AuthContext";
 import { format, addDays } from "date-fns";
 import {
@@ -27,6 +27,7 @@ const generationLock = new Set();
  */
 export function useMyTodos() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const me = useMemo(
     () => ({ email: user?.email, full_name: user?.full_name, role: user?.role }),
     [user]
@@ -63,7 +64,7 @@ export function useMyTodos() {
         const windowEnd = addDays(new Date(), WINDOW_FWD);
         let created = false;
         for (const todo of todos) {
-          if (!todo.is_active) continue;
+          if (!todo.is_active || todo.archived_at) continue;
           const assignees = resolveAssignees(todo, [me], groups);
           if (!assignees.some((a) => a.email === user.email)) continue;
           const result = await ensureOccurrences({
@@ -91,6 +92,15 @@ export function useMyTodos() {
     return () => unsub();
   }, []);
 
+  // Refresh templates live too, so an admin archiving a todo (or an auto-
+  // archive from another device) removes its pending items right away.
+  useEffect(() => {
+    const unsub = base44.entities.Todo.subscribe(() =>
+      queryClient.invalidateQueries({ queryKey: ["todos"] })
+    );
+    return () => unsub();
+  }, []);
+
   const todoById = useMemo(() => {
     const m = {};
     todos.forEach((t) => (m[t.id] = t));
@@ -107,29 +117,40 @@ export function useMyTodos() {
         if ((o.completed_at || "").slice(0, 10) === today) doneToday.push(o);
         continue;
       }
-      if (o.due_date < today) overdue.push(o);
-      else if (o.due_date === today) todayItems.push(o);
+      // Pending items of archived todos are hidden (completed ones above stay
+      // visible, e.g. the occurrence whose completion auto-archived a one-off).
+      if (todoById[o.todo_id]?.archived_at) continue;
+      // Date-less ("anytime") tasks live in Today until completed — never overdue.
+      if (!o.due_date || o.due_date === today) todayItems.push(o);
+      else if (o.due_date < today) overdue.push(o);
       else upcoming.push(o);
     }
-    const byDate = (a, b) => (a.due_date < b.due_date ? -1 : 1);
+    // Dated items first (ascending), anytime items last.
+    const byDate = (a, b) => {
+      if (!a.due_date) return b.due_date ? 1 : 0;
+      if (!b.due_date) return -1;
+      return a.due_date < b.due_date ? -1 : 1;
+    };
     return {
       overdue: overdue.sort(byDate),
       todayItems: todayItems.sort(byDate),
       upcoming: upcoming.sort(byDate),
       doneToday,
     };
-  }, [occurrences, today]);
+  }, [occurrences, today, todoById]);
 
   const toggle = async (occ) => {
     if (occ.status === "completed") {
-      await reopenOccurrence(occ);
+      await reopenOccurrence(occ, todoById[occ.todo_id]);
     } else {
       await completeOccurrence({ occurrence: occ, todo: todoById[occ.todo_id], user });
     }
     refetchOccurrences();
+    // Completing/reopening a one-off can archive/un-archive its template.
+    queryClient.invalidateQueries({ queryKey: ["todos"] });
   };
 
   const dueCount = grouped.overdue.length + grouped.todayItems.length;
 
-  return { ...grouped, dueCount, todoById, toggle, refetch: refetchOccurrences };
+  return { ...grouped, dueCount, today, todoById, toggle, refetch: refetchOccurrences };
 }

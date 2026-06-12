@@ -44,9 +44,14 @@ import {
   Repeat,
   Calendar as CalendarIcon,
   Bell,
+  Archive,
+  ArchiveRestore,
+  GripVertical,
 } from "lucide-react";
+import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 import { toast } from "sonner";
 import MemberPicker from "@/components/shared/MemberPicker";
+import MyTodos from "@/components/todos/MyTodos";
 import {
   WEEKDAYS,
   computeDueDates,
@@ -73,6 +78,7 @@ function recurrenceLabel(todo) {
 const emptyTodo = {
   name: "",
   description: "",
+  category: "",
   recurrence: "one_off",
   recurrence_days: [],
   recurrence_day_of_month: 1,
@@ -99,7 +105,7 @@ export default function DashboardTodos() {
 
   const { data: todos = [], refetch: refetchTodos } = useQuery({
     queryKey: ["todos"],
-    queryFn: () => base44.entities.Todo.filter({ company_id: user.company_id }),
+    queryFn: () => base44.entities.Todo.filter({ company_id: user.company_id }, "sort_order"),
     enabled: !!user?.company_id,
   });
 
@@ -122,6 +128,97 @@ export default function DashboardTodos() {
   }, []);
 
   const today = format(new Date(), "yyyy-MM-dd");
+
+  const activeTodos = useMemo(() => todos.filter((t) => !t.archived_at), [todos]);
+  const archivedTodos = useMemo(
+    () =>
+      todos
+        .filter((t) => t.archived_at)
+        .sort((a, b) => (a.archived_at < b.archived_at ? 1 : -1)),
+    [todos]
+  );
+
+  // Unique category values for the editor's datalist (case-insensitive dedupe,
+  // keep first-seen casing) and for grouping the active list.
+  const existingCategories = useMemo(() => {
+    const seen = new Map();
+    for (const t of todos) {
+      const c = (t.category || "").trim();
+      if (c && !seen.has(c.toLowerCase())) seen.set(c.toLowerCase(), c);
+    }
+    return [...seen.values()].sort((a, b) => a.localeCompare(b));
+  }, [todos]);
+
+  // Group order follows the todos' sort_order (the query sorts by it): a
+  // group appears where its first todo does, so drag-reordering groups is
+  // just a renumbering of the flat sequence. Uncategorized ("Other") is
+  // always last.
+  const categoryGroups = useMemo(() => {
+    const map = new Map();
+    for (const t of activeTodos) {
+      const cat = (t.category || "").trim() || null;
+      const key = cat ? cat.toLowerCase() : "__other";
+      if (!map.has(key)) map.set(key, { key, category: cat, todos: [] });
+      map.get(key).todos.push(t);
+    }
+    const groups = [...map.values()];
+    return [...groups.filter((g) => g.category), ...groups.filter((g) => !g.category)];
+  }, [activeTodos]);
+  const hasCategories = categoryGroups.some((g) => g.category);
+
+  // Drag & drop: rebuild the displayed group/item arrays, flatten them back
+  // into one sequence, renumber sort_order, and persist whatever changed.
+  const handleDragEnd = async (result) => {
+    const { source, destination, type } = result;
+    if (!destination) return;
+    if (source.droppableId === destination.droppableId && source.index === destination.index)
+      return;
+
+    let groupsArr = categoryGroups.map((g) => ({ ...g, todos: [...g.todos] }));
+
+    if (type === "groups") {
+      const [moved] = groupsArr.splice(source.index, 1);
+      groupsArr.splice(destination.index, 0, moved);
+      // "Other" stays last no matter where it was dropped relative to it.
+      groupsArr = [...groupsArr.filter((g) => g.category), ...groupsArr.filter((g) => !g.category)];
+    } else {
+      const src = groupsArr.find((g) => `cat-${g.key}` === source.droppableId);
+      const dst = groupsArr.find((g) => `cat-${g.key}` === destination.droppableId);
+      if (!src || !dst) return;
+      const [moved] = src.todos.splice(source.index, 1);
+      dst.todos.splice(destination.index, 0, moved);
+    }
+
+    const flat = groupsArr.flatMap((g) =>
+      g.todos.map((t) => ({ id: t.id, category: g.category }))
+    );
+    const updates = [];
+    flat.forEach((f, i) => {
+      const orig = todos.find((t) => t.id === f.id);
+      const patch = {};
+      if ((orig?.sort_order ?? null) !== i) patch.sort_order = i;
+      if (((orig?.category || "").trim() || null) !== f.category) patch.category = f.category;
+      if (Object.keys(patch).length) updates.push({ id: f.id, patch });
+    });
+    if (updates.length === 0) return;
+
+    // Optimistic: reorder the cache immediately so the drop doesn't snap back.
+    queryClient.setQueryData(["todos"], (old = []) => {
+      const pos = new Map(flat.map((f, i) => [f.id, i]));
+      return old
+        .map((t) =>
+          pos.has(t.id) ? { ...t, sort_order: pos.get(t.id), category: flat[pos.get(t.id)].category } : t
+        )
+        .sort((a, b) => (a.sort_order ?? Infinity) - (b.sort_order ?? Infinity));
+    });
+    try {
+      await Promise.all(updates.map((u) => base44.entities.Todo.update(u.id, u.patch)));
+    } catch (e) {
+      toast.error(e.message || "Could not save the new order");
+    }
+    refetchTodos();
+    queryClient.invalidateQueries({ queryKey: ["todos"] });
+  };
 
   const statsByTodo = useMemo(() => {
     const map = {};
@@ -185,6 +282,7 @@ export default function DashboardTodos() {
         company_id: user.company_id,
         name: draft.name.trim(),
         description: draft.description || null,
+        category: draft.category?.trim() || null,
         created_by_email: user.email,
         created_by_name: user.full_name || user.email,
         assignee_emails: draft.assignee_emails || [],
@@ -195,10 +293,14 @@ export default function DashboardTodos() {
         recurrence_day_of_month:
           draft.recurrence === "monthly" ? Number(draft.recurrence_day_of_month) || 1 : null,
         due_time: draft.due_time || null,
-        due_date: draft.recurrence === "one_off" ? draft.due_date : null,
+        due_date: draft.recurrence === "one_off" ? draft.due_date || null : null,
         notify_emails: draft.notify_emails || [],
         is_active: draft.is_active !== false,
       };
+      if (!editingId) {
+        payload.sort_order =
+          todos.reduce((m, t) => Math.max(m, t.sort_order ?? -1), -1) + 1;
+      }
 
       const saved = editingId
         ? await base44.entities.Todo.update(editingId, payload)
@@ -219,6 +321,9 @@ export default function DashboardTodos() {
       setEditorOpen(false);
       refetchTodos();
       refetchOccurrences();
+      // Prefix match also refreshes ["todos", company_id] used by the
+      // embedded My Tasks strip and the employee views.
+      queryClient.invalidateQueries({ queryKey: ["todos"] });
       queryClient.invalidateQueries({ queryKey: ["my-todo-occurrences"] });
     } catch (e) {
       toast.error(e.message || "Could not save to-do");
@@ -248,6 +353,31 @@ export default function DashboardTodos() {
     return dates[0] || null;
   };
 
+  // Archive is reversible (Restore lives in the Archived tab), so no confirm.
+  const archiveTodo = async (todo) => {
+    try {
+      await base44.entities.Todo.update(todo.id, {
+        archived_at: new Date().toISOString(),
+      });
+      toast.success("To-Do archived");
+      refetchTodos();
+      queryClient.invalidateQueries({ queryKey: ["todos"] });
+    } catch (e) {
+      toast.error(e.message || "Could not archive");
+    }
+  };
+
+  const restoreTodo = async (todo) => {
+    try {
+      await base44.entities.Todo.update(todo.id, { archived_at: null });
+      toast.success("To-Do restored");
+      refetchTodos();
+      queryClient.invalidateQueries({ queryKey: ["todos"] });
+    } catch (e) {
+      toast.error(e.message || "Could not restore");
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-5xl">
       <div className="flex items-center justify-between">
@@ -261,9 +391,23 @@ export default function DashboardTodos() {
         </div>
       </div>
 
+      {/* The signed-in admin's own tasks, so they can check things off here
+          without switching to the employee view. */}
+      <Card>
+        <CardContent className="p-4">
+          <h2 className="text-sm font-semibold flex items-center gap-1.5 mb-3">
+            <ListChecks className="h-4 w-4 text-primary" /> My Tasks
+          </h2>
+          <MyTodos compact />
+        </CardContent>
+      </Card>
+
       <Tabs defaultValue="todos">
         <TabsList>
           <TabsTrigger value="todos">To-Dos</TabsTrigger>
+          <TabsTrigger value="archived">
+            Archived{archivedTodos.length > 0 ? ` (${archivedTodos.length})` : ""}
+          </TabsTrigger>
           <TabsTrigger value="groups">Groups</TabsTrigger>
         </TabsList>
 
@@ -275,69 +419,103 @@ export default function DashboardTodos() {
             </Button>
           </div>
 
-          {todos.length === 0 && (
+          {activeTodos.length === 0 && (
             <div className="text-center py-16 text-muted-foreground">
               <ListChecks className="h-10 w-10 mx-auto mb-3 opacity-40" />
               <p>No to-dos yet. Create one to get started.</p>
             </div>
           )}
 
-          <div className="grid gap-3">
-            {todos.map((todo) => {
-              const s = statsByTodo[todo.id] || { pending: 0, completed: 0, overdue: 0 };
-              const due = nextDue(todo);
-              return (
-                <Card key={todo.id} className={todo.is_active ? "" : "opacity-60"}>
-                  <CardContent className="p-4 flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-semibold">{todo.name}</h3>
-                        {!todo.is_active && <Badge variant="outline">Inactive</Badge>}
-                      </div>
-                      {todo.description && (
-                        <p className="text-sm text-muted-foreground mt-0.5 line-clamp-2">
-                          {todo.description}
-                        </p>
+          <DragDropContext onDragEnd={handleDragEnd}>
+            <Droppable droppableId="category-groups" type="groups">
+              {(groupsProvided) => (
+                <div
+                  ref={groupsProvided.innerRef}
+                  {...groupsProvided.droppableProps}
+                  className="space-y-4"
+                >
+                  {categoryGroups.map((g, gi) => (
+                    <Draggable
+                      key={g.key}
+                      draggableId={`group-${g.key}`}
+                      index={gi}
+                      isDragDisabled={!g.category}
+                    >
+                      {(groupProvided) => (
+                        <div ref={groupProvided.innerRef} {...groupProvided.draggableProps}>
+                          <div
+                            {...groupProvided.dragHandleProps}
+                            className={hasCategories ? "mb-2" : "hidden"}
+                          >
+                            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1 cursor-grab">
+                              {g.category && <GripVertical className="h-3.5 w-3.5 opacity-50" />}
+                              {g.category || "Other"}
+                            </h3>
+                          </div>
+                          <Droppable droppableId={`cat-${g.key}`} type="todos">
+                            {(itemsProvided, itemsSnapshot) => (
+                              <div
+                                ref={itemsProvided.innerRef}
+                                {...itemsProvided.droppableProps}
+                                className={`grid gap-3 rounded-lg transition-colors ${
+                                  itemsSnapshot.isDraggingOver ? "bg-muted/40 p-2 -m-2" : ""
+                                }`}
+                              >
+                                {g.todos.map((todo, ti) => (
+                                  <Draggable key={todo.id} draggableId={todo.id} index={ti}>
+                                    {(itemProvided) => (
+                                      <div
+                                        ref={itemProvided.innerRef}
+                                        {...itemProvided.draggableProps}
+                                        {...itemProvided.dragHandleProps}
+                                      >
+                                        <TodoCard
+                                          todo={todo}
+                                          stats={statsByTodo[todo.id]}
+                                          due={nextDue(todo)}
+                                          onEdit={() => openEdit(todo)}
+                                          onArchive={() => archiveTodo(todo)}
+                                          onDelete={() => setDeleteTarget(todo)}
+                                        />
+                                      </div>
+                                    )}
+                                  </Draggable>
+                                ))}
+                                {itemsProvided.placeholder}
+                              </div>
+                            )}
+                          </Droppable>
+                        </div>
                       )}
-                      <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground flex-wrap">
-                        <span className="flex items-center gap-1">
-                          <Repeat className="h-3.5 w-3.5" /> {recurrenceLabel(todo)}
-                        </span>
-                        {due && (
-                          <span className="flex items-center gap-1">
-                            <CalendarIcon className="h-3.5 w-3.5" /> next {due}
-                          </span>
-                        )}
-                        {todo.notify_emails?.length > 0 && (
-                          <span className="flex items-center gap-1">
-                            <Bell className="h-3.5 w-3.5" /> {todo.notify_emails.length} notified
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 mt-2">
-                        {s.overdue > 0 && (
-                          <Badge variant="destructive">{s.overdue} overdue</Badge>
-                        )}
-                        <Badge variant="secondary">{s.pending} pending</Badge>
-                        <Badge variant="outline">{s.completed} done</Badge>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <Button variant="ghost" size="icon" onClick={() => openEdit(todo)}>
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setDeleteTarget(todo)}
-                      >
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
+                    </Draggable>
+                  ))}
+                  {groupsProvided.placeholder}
+                </div>
+              )}
+            </Droppable>
+          </DragDropContext>
+        </TabsContent>
+
+        {/* ---- Archived tab ---- */}
+        <TabsContent value="archived" className="space-y-4 pt-4">
+          {archivedTodos.length === 0 && (
+            <div className="text-center py-16 text-muted-foreground">
+              <Archive className="h-10 w-10 mx-auto mb-3 opacity-40" />
+              <p>Nothing archived. Completed one-offs land here automatically.</p>
+            </div>
+          )}
+
+          <div className="grid gap-3">
+            {archivedTodos.map((todo) => (
+              <TodoCard
+                key={todo.id}
+                todo={todo}
+                stats={statsByTodo[todo.id]}
+                archived
+                onRestore={() => restoreTodo(todo)}
+                onDelete={() => setDeleteTarget(todo)}
+              />
+            ))}
           </div>
         </TabsContent>
 
@@ -376,6 +554,23 @@ export default function DashboardTodos() {
                 placeholder="Optional details / instructions"
               />
             </div>
+            <div>
+              <Label>Category (optional)</Label>
+              <Input
+                list="todo-category-options"
+                value={draft.category || ""}
+                onChange={(e) => set({ category: e.target.value })}
+                placeholder="e.g. Cleaning, Opening, Office"
+              />
+              <datalist id="todo-category-options">
+                {existingCategories.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+              <p className="text-xs text-muted-foreground mt-1">
+                To-dos with the same category are grouped together.
+              </p>
+            </div>
 
             {/* Recurrence */}
             <div className="grid grid-cols-2 gap-3">
@@ -404,12 +599,15 @@ export default function DashboardTodos() {
 
             {draft.recurrence === "one_off" && (
               <div>
-                <Label>Due date</Label>
+                <Label>Due date (optional)</Label>
                 <Input
                   type="date"
                   value={draft.due_date || ""}
                   onChange={(e) => set({ due_date: e.target.value })}
                 />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Leave empty for an anytime task — it shows under Today until done.
+                </p>
               </div>
             )}
 
@@ -578,6 +776,71 @@ export default function DashboardTodos() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+function TodoCard({ todo, stats, due, archived = false, onEdit, onArchive, onRestore, onDelete }) {
+  const s = stats || { pending: 0, completed: 0, overdue: 0 };
+  return (
+    <Card className={archived || !todo.is_active ? "opacity-60" : ""}>
+      <CardContent className="p-4 flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-semibold">{todo.name}</h3>
+            {!todo.is_active && !archived && <Badge variant="outline">Inactive</Badge>}
+            {archived && todo.archived_at && (
+              <Badge variant="outline">
+                Archived {format(new Date(todo.archived_at), "MMM d")}
+              </Badge>
+            )}
+          </div>
+          {todo.description && (
+            <p className="text-sm text-muted-foreground mt-0.5 line-clamp-2">
+              {todo.description}
+            </p>
+          )}
+          <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground flex-wrap">
+            <span className="flex items-center gap-1">
+              <Repeat className="h-3.5 w-3.5" /> {recurrenceLabel(todo)}
+            </span>
+            {!archived && due && (
+              <span className="flex items-center gap-1">
+                <CalendarIcon className="h-3.5 w-3.5" /> next {due}
+              </span>
+            )}
+            {todo.notify_emails?.length > 0 && (
+              <span className="flex items-center gap-1">
+                <Bell className="h-3.5 w-3.5" /> {todo.notify_emails.length} notified
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            {s.overdue > 0 && <Badge variant="destructive">{s.overdue} overdue</Badge>}
+            <Badge variant="secondary">{s.pending} pending</Badge>
+            <Badge variant="outline">{s.completed} done</Badge>
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {archived ? (
+            <Button variant="ghost" size="sm" onClick={onRestore}>
+              <ArchiveRestore className="h-4 w-4 mr-1" /> Restore
+            </Button>
+          ) : (
+            <>
+              <Button variant="ghost" size="icon" onClick={onEdit}>
+                <Pencil className="h-4 w-4" />
+              </Button>
+              <Button variant="ghost" size="icon" title="Archive" onClick={onArchive}>
+                <Archive className="h-4 w-4" />
+              </Button>
+            </>
+          )}
+          <Button variant="ghost" size="icon" onClick={onDelete}>
+            <Trash2 className="h-4 w-4 text-destructive" />
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
