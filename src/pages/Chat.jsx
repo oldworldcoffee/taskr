@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { base44 } from "@/api/base44Client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -6,13 +6,51 @@ import { useAuth } from "@/lib/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input"; // still used in NewDMDialog search
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Globe, Send, Plus, MessageSquare, ChevronDown, ChevronRight, X, ChevronLeft, Bell } from "lucide-react";
+import { Globe, Send, Plus, MessageSquare, ChevronDown, ChevronRight, X, ChevronLeft, Bell, Paperclip, Reply, FileText, Loader2, ImagePlus } from "lucide-react";
 import { getChannelLastSeen, markChannelSeen } from "@/hooks/useUnreadCounts";
+import { heartbeatPresence, clearPresence } from "@/lib/presence";
 import { formatDistanceToNow } from "date-fns";
 import UserAvatar from "@/components/shared/UserAvatar";
 import MentionTextarea from "@/components/shared/MentionTextarea";
 
-function MessageBubble({ message, isOwn, avatarUrl }) {
+const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+
+function isImageAttachment(att) {
+  if (att?.type?.startsWith("image/")) return true;
+  return /\.(png|jpe?g|gif|webp|heic|svg)$/i.test(att?.name || att?.url || "");
+}
+
+function AttachmentList({ attachments, isOwn }) {
+  if (!attachments?.length) return null;
+  return (
+    <div className={`flex flex-col gap-1.5 ${isOwn ? "items-end" : "items-start"}`}>
+      {attachments.map((att, i) =>
+        isImageAttachment(att) ? (
+          <a key={i} href={att.url} target="_blank" rel="noopener noreferrer">
+            <img
+              src={att.url}
+              alt={att.name || "image"}
+              className="max-h-64 max-w-full rounded-xl border border-border object-cover"
+            />
+          </a>
+        ) : (
+          <a
+            key={i}
+            href={att.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-card text-sm hover:bg-muted transition-colors max-w-full"
+          >
+            <FileText className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+            <span className="truncate">{att.name || "File"}</span>
+          </a>
+        )
+      )}
+    </div>
+  );
+}
+
+function MessageBubble({ message, isOwn, avatarUrl, reactions = [], userEmail, onToggleReaction, onReply }) {
   const renderContent = (text) => {
     const parts = text.split(/(@\S+)/g);
     return parts.map((part, i) =>
@@ -22,23 +60,80 @@ function MessageBubble({ message, isOwn, avatarUrl }) {
     );
   };
 
+  // Group this message's reactions into chips: one per emoji with count +
+  // whether the current user is among them (toggles delete vs add on click).
+  const grouped = [];
+  for (const r of reactions) {
+    const g = grouped.find((x) => x.emoji === r.emoji);
+    const name = r.user_name || r.user_email;
+    if (g) {
+      g.count += 1;
+      g.mine = g.mine || r.user_email === userEmail;
+      g.names.push(name);
+    } else {
+      grouped.push({ emoji: r.emoji, count: 1, mine: r.user_email === userEmail, names: [name] });
+    }
+  }
+
   return (
-    <div className={`flex items-end gap-2 ${isOwn ? "flex-row-reverse" : "flex-row"}`}>
+    <div className={`group flex items-end gap-2 ${isOwn ? "flex-row-reverse" : "flex-row"}`}>
       {!isOwn && (
         <div className="flex-shrink-0 mb-0.5">
           <UserAvatar name={message.author_name} email={message.author_email} avatarUrl={avatarUrl} size="sm" />
         </div>
       )}
-      <div className={`max-w-[78%] ${isOwn ? "items-end" : "items-start"} flex flex-col gap-0.5`}>
+      <div className={`max-w-[78%] ${isOwn ? "items-end" : "items-start"} flex flex-col gap-1`}>
         {!isOwn && (
           <span className="text-xs text-muted-foreground px-1">{message.author_name || message.author_email}</span>
         )}
-        <div className={`px-3 py-2 rounded-2xl text-sm ${isOwn ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm"}`}>
-          {renderContent(message.content)}
-        </div>
+        {message.reply_to && (
+          <div className="px-3 py-1.5 rounded-xl bg-muted/60 border-l-2 border-primary/40 text-xs text-muted-foreground max-w-full">
+            <span className="font-semibold">{message.reply_to.author_name || "Someone"}: </span>
+            <span>{message.reply_to.content}</span>
+          </div>
+        )}
+        <AttachmentList attachments={message.attachments} isOwn={isOwn} />
+        {message.content ? (
+          <div className={`px-3 py-2 rounded-2xl text-sm ${isOwn ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-muted rounded-bl-sm"}`}>
+            {renderContent(message.content)}
+          </div>
+        ) : null}
+        {grouped.length > 0 && (
+          <div className={`flex flex-wrap gap-1 ${isOwn ? "justify-end" : ""}`}>
+            {grouped.map((g) => (
+              <button
+                key={g.emoji}
+                onClick={() => onToggleReaction(message, g.emoji)}
+                title={g.names.join(", ")}
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs border transition-colors ${
+                  g.mine ? "bg-primary/10 border-primary/40" : "bg-card border-border hover:bg-muted"
+                }`}
+              >
+                <span>{g.emoji}</span>
+                <span className="font-medium">{g.count}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <span className="text-[10px] text-muted-foreground px-1">
           {formatDistanceToNow(new Date(message.created_date), { addSuffix: true })}
         </span>
+      </div>
+      {/* Hover actions: quick reactions + reply */}
+      <div className="hidden group-hover:flex items-center gap-0.5 bg-card border border-border rounded-full px-1.5 py-0.5 shadow-sm self-center flex-shrink-0">
+        {QUICK_EMOJIS.map((e) => (
+          <button
+            key={e}
+            onClick={() => onToggleReaction(message, e)}
+            className="p-0.5 text-sm leading-none hover:scale-125 transition-transform"
+            title={`React ${e}`}
+          >
+            {e}
+          </button>
+        ))}
+        <button onClick={() => onReply(message)} className="p-1 rounded-full hover:bg-muted" title="Reply">
+          <Reply className="h-3.5 w-3.5 text-muted-foreground" />
+        </button>
       </div>
     </div>
   );
@@ -47,6 +142,10 @@ function MessageBubble({ message, isOwn, avatarUrl }) {
 function ChatRoom({ channelId, channelName, userId, userName, userEmail, companyId, isDM, dmParticipants, isPrivate, onBack, allUsers = [] }) {
   const queryClient = useQueryClient();
   const [text, setText] = useState("");
+  const [replyTo, setReplyTo] = useState(null); // message being replied to
+  const [pendingFiles, setPendingFiles] = useState([]); // [{key, name, type, size, url, uploading, error}]
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef(null);
   const userAvatarMap = Object.fromEntries(allUsers.map(u => [u.email, u.avatar_url]));
   const bottomRef = useRef(null);
 
@@ -67,12 +166,96 @@ function ChatRoom({ channelId, channelName, userId, userName, userEmail, company
     },
   });
 
+  // Reactions for every message in this conversation, keyed by channel so one
+  // query + one realtime subscription covers the whole room.
+  const reactionsKey = ["chat-reactions", channelId];
+  const { data: reactions = [] } = useQuery({
+    queryKey: reactionsKey,
+    queryFn: () => base44.entities.ChatMessageReaction.filter({ channel_key: channelId }),
+  });
+  const reactionsByMessage = useMemo(() => {
+    const map = {};
+    for (const r of reactions) (map[r.message_id] ||= []).push(r);
+    return map;
+  }, [reactions]);
+
   useEffect(() => {
-    const unsub = base44.entities.ChatMessage.subscribe(() => {
+    const unsubMessages = base44.entities.ChatMessage.subscribe(() => {
       queryClient.invalidateQueries({ queryKey });
     });
-    return unsub;
+    const unsubReactions = base44.entities.ChatMessageReaction.subscribe(() => {
+      queryClient.invalidateQueries({ queryKey: reactionsKey });
+    });
+    return () => {
+      unsubMessages();
+      unsubReactions();
+    };
   }, [channelId, queryClient]);
+
+  const toggleReaction = async (message, emoji) => {
+    const mine = (reactionsByMessage[message.id] || []).find(
+      r => r.user_email === userEmail && r.emoji === emoji
+    );
+    try {
+      if (mine) {
+        await base44.entities.ChatMessageReaction.delete(mine.id);
+      } else {
+        await base44.entities.ChatMessageReaction.create({
+          company_id: companyId,
+          message_id: message.id,
+          channel_key: channelId,
+          user_email: userEmail,
+          user_name: userName,
+          emoji,
+        });
+      }
+    } catch (e) {
+      console.error("Reaction failed", e);
+    }
+    queryClient.invalidateQueries({ queryKey: reactionsKey });
+  };
+
+  // Attachments: files are uploaded as soon as they're added (picker, paste, or
+  // drag-drop) so Send only has to reference the finished URLs.
+  const addFiles = (fileList) => {
+    const files = Array.from(fileList || []).filter(f => f && f.size > 0);
+    for (const file of files) {
+      const key = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      if (file.size > 50 * 1024 * 1024) {
+        setPendingFiles(prev => [...prev, { key, name: file.name, type: file.type, size: file.size, url: null, uploading: false, error: "Over 50 MB limit" }]);
+        continue;
+      }
+      setPendingFiles(prev => [...prev, { key, name: file.name, type: file.type, size: file.size, url: null, uploading: true }]);
+      base44.integrations.Core.UploadFile({ file })
+        .then(({ file_url }) => {
+          setPendingFiles(prev => prev.map(p => p.key === key ? { ...p, url: file_url, uploading: false } : p));
+        })
+        .catch((e) => {
+          console.error("Upload failed", e);
+          setPendingFiles(prev => prev.map(p => p.key === key ? { ...p, uploading: false, error: "Upload failed" } : p));
+        });
+    }
+  };
+
+  const handlePaste = (e) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (files.length > 0) {
+      e.preventDefault();
+      addFiles(files);
+    }
+  };
+
+  const handleDragOver = (e) => {
+    if (Array.from(e.dataTransfer?.types || []).includes("Files")) {
+      e.preventDefault();
+      setDragOver(true);
+    }
+  };
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    addFiles(e.dataTransfer?.files);
+  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -91,16 +274,60 @@ function ChatRoom({ channelId, channelName, userId, userName, userEmail, company
     }
   }, [channelId, messages, userEmail]);
 
+  // Presence: while this conversation is open AND the tab is visible+focused,
+  // heartbeat it so push-fanout mutes mobile push for this channel. Blur, hide,
+  // switch channel, or leave the page clears it → mobile push resumes.
+  useEffect(() => {
+    if (!channelId || !userEmail) return;
+    const isViewing = () =>
+      typeof document !== "undefined" &&
+      document.visibilityState === "visible" &&
+      document.hasFocus();
+    const beat = () => {
+      if (isViewing()) heartbeatPresence(userEmail, channelId);
+    };
+    const stop = () => clearPresence(userEmail);
+    const onVisibility = () => (isViewing() ? beat() : stop());
+    beat(); // claim presence immediately on open
+    const interval = setInterval(beat, 25000); // refresh inside the ~40s stale window
+    window.addEventListener("focus", beat);
+    window.addEventListener("blur", stop);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", beat);
+      window.removeEventListener("blur", stop);
+      document.removeEventListener("visibilitychange", onVisibility);
+      stop();
+    };
+  }, [channelId, userEmail]);
+
+  const stillUploading = pendingFiles.some(p => p.uploading);
+  const readyAttachments = pendingFiles.filter(p => p.url);
+  const canSend = (text.trim() || readyAttachments.length > 0) && !stillUploading;
+
   const sendMessage = async () => {
-    if (!text.trim()) return;
+    if (!canSend) return;
     const msg = text.trim();
     setText("");
+    const attachments = readyAttachments.map(({ url, name, type, size }) => ({ url, name, type, size }));
+    setPendingFiles([]);
+    const reply = replyTo;
+    setReplyTo(null);
     const payload = {
       content: msg,
       author_name: userName,
       author_email: userEmail,
       company_id: companyId,
     };
+    if (attachments.length > 0) payload.attachments = attachments;
+    if (reply) {
+      payload.reply_to = {
+        id: reply.id,
+        author_name: reply.author_name || reply.author_email,
+        content: (reply.content || "📎 Attachment").slice(0, 140),
+      };
+    }
     if (isDM) {
       payload.dm_channel_id = channelId;
       payload.dm_participants = dmParticipants;
@@ -112,7 +339,19 @@ function ChatRoom({ channelId, channelName, userId, userName, userEmail, company
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className="flex flex-col h-full relative"
+      onDragOver={handleDragOver}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+    >
+      {dragOver && (
+        <div className="absolute inset-0 z-20 bg-primary/10 border-2 border-dashed border-primary rounded-xl flex items-center justify-center pointer-events-none">
+          <div className="flex items-center gap-2 bg-card px-4 py-2 rounded-xl border border-border shadow-md text-sm font-medium">
+            <ImagePlus className="h-4 w-4 text-primary" /> Drop to attach
+          </div>
+        </div>
+      )}
       {/* Channel header with back button on mobile */}
       <div className="border-b border-border px-3 py-3 flex-shrink-0 flex items-center gap-2">
         {onBack && (
@@ -133,14 +372,71 @@ function ChatRoom({ channelId, channelName, userId, userName, userEmail, company
           </div>
         ) : (
           messages.map(msg => (
-            <MessageBubble key={msg.id} message={msg} isOwn={msg.author_email === userEmail} avatarUrl={userAvatarMap[msg.author_email]} />
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              isOwn={msg.author_email === userEmail}
+              avatarUrl={userAvatarMap[msg.author_email]}
+              reactions={reactionsByMessage[msg.id]}
+              userEmail={userEmail}
+              onToggleReaction={toggleReaction}
+              onReply={(m) => setReplyTo(m)}
+            />
           ))
         )}
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t border-border p-3 flex-shrink-0">
+      <div className="border-t border-border p-3 flex-shrink-0 space-y-2">
+        {replyTo && (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-muted/60 border-l-2 border-primary/40 text-xs">
+            <Reply className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <span className="font-semibold">Replying to {replyTo.author_name || replyTo.author_email}</span>
+              <p className="text-muted-foreground truncate">{replyTo.content || "📎 Attachment"}</p>
+            </div>
+            <button onClick={() => setReplyTo(null)} className="p-0.5 rounded hover:bg-muted">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+        {pendingFiles.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {pendingFiles.map(p => (
+              <div
+                key={p.key}
+                className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-xs max-w-56 ${p.error ? "border-destructive/50 bg-destructive/10 text-destructive" : "border-border bg-muted/50"}`}
+              >
+                {p.uploading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin flex-shrink-0" />
+                ) : p.type?.startsWith("image/") ? (
+                  <ImagePlus className="h-3.5 w-3.5 flex-shrink-0" />
+                ) : (
+                  <FileText className="h-3.5 w-3.5 flex-shrink-0" />
+                )}
+                <span className="truncate">{p.name}</span>
+                {p.error && <span className="flex-shrink-0">· {p.error}</span>}
+                <button
+                  onClick={() => setPendingFiles(prev => prev.filter(x => x.key !== p.key))}
+                  className="p-0.5 rounded hover:bg-muted flex-shrink-0"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex gap-2 items-end">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={e => { addFiles(e.target.files); e.target.value = ""; }}
+          />
+          <Button size="icon" variant="ghost" onClick={() => fileInputRef.current?.click()} title="Attach files">
+            <Paperclip className="h-4 w-4" />
+          </Button>
           <div className="flex-1">
             <MentionTextarea
               value={text}
@@ -148,11 +444,12 @@ function ChatRoom({ channelId, channelName, userId, userName, userEmail, company
               placeholder="Type a message... Use @ to mention someone"
               rows={1}
               users={allUsers}
+              onPaste={handlePaste}
               onKeyDown={e => e.key === "Enter" && !e.shiftKey && sendMessage()}
             />
           </div>
-          <Button size="icon" onClick={sendMessage} disabled={!text.trim()}>
-            <Send className="h-4 w-4" />
+          <Button size="icon" onClick={sendMessage} disabled={!canSend}>
+            {stillUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </Button>
         </div>
       </div>
@@ -292,7 +589,7 @@ function UnreadFeed({ messages, channels, dmChannels, userEmail, onSelectChannel
                 <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">{getChannelName(msg)}</span>
                 <span className="text-xs text-muted-foreground ml-auto">{formatDistanceToNow(new Date(msg.created_date), { addSuffix: true })}</span>
               </div>
-              <p className="text-sm text-foreground/80 truncate">{msg.content}</p>
+              <p className="text-sm text-foreground/80 truncate">{msg.content || "📎 Attachment"}</p>
             </div>
           </button>
         ))}

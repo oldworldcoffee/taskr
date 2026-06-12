@@ -5,6 +5,7 @@ const ENTITY_TABLES = {
   CashDepositReceipt: 'cash_deposit_receipts',
   ChatChannel: 'chat_channels',
   ChatMessage: 'chat_messages',
+  ChatMessageReaction: 'chat_message_reactions',
   Checklist: 'checklists',
   ChecklistInstance: 'checklist_instances',
   Company: 'companies',
