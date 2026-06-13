@@ -3,6 +3,10 @@ import { supabase } from '@/api/supabaseClient';
 const ENTITY_TABLES = {
   BrandSettings: 'brand_settings',
   CashDepositReceipt: 'cash_deposit_receipts',
+  CateringEvent: 'catering_events',
+  CateringCrew: 'catering_crew',
+  CateringChecklistItem: 'catering_checklist_items',
+  CateringPackingItem: 'catering_packing_list',
   ChatChannel: 'chat_channels',
   ChatMessage: 'chat_messages',
   ChatMessageReaction: 'chat_message_reactions',
@@ -67,6 +71,10 @@ const ENTITY_TABLES = {
 };
 
 const COMPANY_SCOPED_ENTITIES = new Set([
+  'CateringEvent',
+  'CateringCrew',
+  'CateringChecklistItem',
+  'CateringPackingItem',
   'CommissaryFulfillment',
   'FinancialLaborSettings',
   'FinancialSchedule',

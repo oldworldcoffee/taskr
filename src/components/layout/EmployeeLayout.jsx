@@ -12,6 +12,7 @@ import {
   Users,
   Home,
   Menu,
+  CalendarDays,
 } from "lucide-react";
 import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/lib/AuthContext";
@@ -134,6 +135,7 @@ export default function EmployeeLayout() {
             <NavRow to="/home" icon={Home} label="Dashboard" active={isActive("/home")} onClick={closeMenu} />
             <NavRow to="/checklists" icon={ClipboardList} label="Checklists" active={isActive("/checklists")} onClick={closeMenu} />
             <NavRow to="/my-todos" icon={ListChecks} label="My Tasks" active={isActive("/my-todos")} onClick={closeMenu} />
+            <NavRow to="/my-events" icon={CalendarDays} label="My Events" active={isActive("/my-events")} onClick={closeMenu} />
             <NavRow to="/knowledge-base" icon={BookOpen} label="Knowledge" active={isActive("/knowledge-base")} onClick={closeMenu} />
             <NavRow
               to="/forum"

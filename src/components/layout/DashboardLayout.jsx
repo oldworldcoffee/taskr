@@ -105,6 +105,7 @@ const teamHubItems = [
 ];
 
 const primaryItems = [
+  { path: "/dashboard/catering", label: "Catering Events", icon: CalendarDays, roles: ["admin", "manager"] },
   { path: "/dashboard/equipment", label: "Equipment", icon: Wrench, roles: ["admin", "manager"] },
 ];
 

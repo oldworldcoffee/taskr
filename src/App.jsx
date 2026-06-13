@@ -24,6 +24,7 @@ import NewChecklist from "@/pages/NewChecklist";
 import EmployeeSettings from "@/pages/EmployeeSettings";
 import EmployeeDirectory from "@/pages/EmployeeDirectory";
 import MyTodosPage from "@/pages/MyTodosPage";
+import MyCateringPage from "@/pages/MyCateringPage";
 
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import OperationsHome from "@/pages/OperationsHome";
@@ -40,6 +41,7 @@ import ChecklistSetup from "@/pages/ChecklistSetup";
 import DepositReports from "@/pages/DepositReports";
 import KnowledgeBase from "@/pages/KnowledgeBase";
 import DashboardTodos from "@/pages/DashboardTodos";
+import DashboardCatering from "@/pages/DashboardCatering";
 import EmployeeKnowledgeBase from "@/pages/EmployeeKnowledgeBasePage";
 import Forum from "@/pages/Forum";
 import Chat from "@/pages/Chat";
@@ -145,6 +147,7 @@ const AuthenticatedApp = () => {
           <Route path="/home" element={<EmployeeDashboard />} />
           <Route path="/checklists" element={<EmployeeHome />} />
           <Route path="/my-todos" element={<MyTodosPage />} />
+          <Route path="/my-events" element={<MyCateringPage />} />
           <Route path="/checklist/:instanceId" element={<ChecklistDetail />} />
           <Route path="/checklist/new/:checklistId" element={<NewChecklist />} />
           <Route path="/settings" element={<EmployeeSettings />} />
@@ -170,6 +173,7 @@ const AuthenticatedApp = () => {
           <Route path="/dashboard/checklists/setup" element={<ChecklistSetup />} />
           <Route path="/dashboard/deposits" element={<DepositReports />} />
           <Route path="/dashboard/todos" element={<DashboardTodos />} />
+          <Route path="/dashboard/catering" element={<DashboardCatering />} />
           <Route path="/dashboard/knowledge-base" element={<KnowledgeBase />} />
           <Route path="/dashboard/forum" element={<Forum />} />
           <Route path="/dashboard/chat" element={<Chat />} />
