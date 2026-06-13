@@ -120,26 +120,44 @@ export default function ChecklistDetail() {
     return task.scheduled_days.includes(today);
   };
 
-  // Group tasks by their group_id (filtered by day)
+  // A task is only actionable if it's scheduled for today AND it can actually be
+  // shown to the user. Top-level tasks must be ungrouped or belong to a group that
+  // still exists; subtasks must hang off a visible parent. Counting tasks that can
+  // never be rendered (an orphaned group_id, or a subtask whose parent isn't
+  // scheduled today) would leave the checklist permanently blocked from completion.
+  const existingGroupIds = new Set(taskGroups.map((g) => g.id));
+  const isTopLevelVisible = (t) =>
+    !t.parent_task_id &&
+    isTaskScheduledForToday(t) &&
+    (!t.group_id || existingGroupIds.has(t.group_id));
+  const visibleParentIds = new Set(tasks.filter(isTopLevelVisible).map((t) => t.id));
+  const isSubtaskVisible = (t) =>
+    !!t.parent_task_id &&
+    visibleParentIds.has(t.parent_task_id) &&
+    isTaskScheduledForToday(t);
+  const isTaskActive = (t) => isTopLevelVisible(t) || isSubtaskVisible(t);
+
+  // Group tasks by their group_id (visible top-level tasks only)
   const tasksByGroup = {};
   taskGroups.forEach(group => {
     tasksByGroup[group.id] = tasks
-      .filter(t => t.group_id === group.id && !t.parent_task_id && isTaskScheduledForToday(t))
+      .filter(t => t.group_id === group.id && isTopLevelVisible(t))
       .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   });
-  // Ungrouped tasks (filtered by day)
+  // Ungrouped tasks (visible top-level tasks only)
   const ungroupedTasks = tasks
-    .filter(t => !t.group_id && !t.parent_task_id && isTaskScheduledForToday(t))
+    .filter(t => !t.group_id && isTopLevelVisible(t))
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
-  // Only count tasks scheduled for this day
-  const scheduledTasks = tasks.filter(isTaskScheduledForToday);
-  const requiredTasks = scheduledTasks.filter((t) => t.is_required);
+  // Count only tasks that are actually actionable today, so the progress bar and the
+  // completion gate match exactly what the user can see and check off.
+  const activeTasks = tasks.filter(isTaskActive);
+  const requiredTasks = activeTasks.filter((t) => t.is_required);
   // A required task is considered "done" if it has a completion OR a flag
   const allRequiredDone = requiredTasks.every((t) => completionMap[t.id] || flagMap[t.id]);
-  const totalDone = Object.keys(completionMap).length;
-  const totalTasks = scheduledTasks.length;
-  const optionalRemaining = scheduledTasks.filter((t) => !t.is_required && !completionMap[t.id] && !flagMap[t.id]).length;
+  const totalDone = activeTasks.filter((t) => completionMap[t.id]).length;
+  const totalTasks = activeTasks.length;
+  const optionalRemaining = activeTasks.filter((t) => !t.is_required && !completionMap[t.id] && !flagMap[t.id]).length;
 
   const handleComplete = async (taskId, value) => {
     const completion = await base44.entities.TaskCompletion.create({
@@ -227,7 +245,7 @@ export default function ChecklistDetail() {
             <h3 className="text-sm font-semibold text-primary uppercase tracking-wide mb-3 px-2">{group.name}</h3>
             <div className="space-y-3">
               {tasksByGroup[group.id]?.map((task) => {
-                const subtasks = tasks.filter((t) => t.parent_task_id === task.id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+                const subtasks = tasks.filter((t) => t.parent_task_id === task.id && isTaskScheduledForToday(t)).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
                 const subtaskCompletionMap = {};
                 subtasks.forEach((st) => { if (completionMap[st.id]) subtaskCompletionMap[st.id] = completionMap[st.id]; });
 
@@ -255,7 +273,7 @@ export default function ChecklistDetail() {
             <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3 px-2">Other Tasks</h3>
             <div className="space-y-3">
               {ungroupedTasks.map((task) => {
-                const subtasks = tasks.filter((t) => t.parent_task_id === task.id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+                const subtasks = tasks.filter((t) => t.parent_task_id === task.id && isTaskScheduledForToday(t)).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
                 const subtaskCompletionMap = {};
                 subtasks.forEach((st) => { if (completionMap[st.id]) subtaskCompletionMap[st.id] = completionMap[st.id]; });
 
